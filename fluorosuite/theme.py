@@ -5,6 +5,9 @@ from __future__ import annotations
 # Panel accent colors for ROI overlays and plot traces.
 ROI_COLOR = "#38bdf8"
 ACCENT = "#14b8a6"
+# Trace/ROI colors for the two comparison videos.
+TRACE_A = "#38bdf8"
+TRACE_B = "#f5a25d"
 
 STYLESHEET = """
 QMainWindow, QWidget { background: #0b1018; color: #e5edf6; font-size: 13px; }
@@ -26,6 +29,8 @@ QPushButton:disabled { color: #64748b; background: #111827; }
 QPushButton#primaryButton { background: #0f766e; border-color: #14b8a6; font-weight: 700; }
 QPushButton#primaryButton:hover { background: #0d9488; }
 QPushButton#recordButton:checked { background: #7f1d1d; border-color: #f87171; color: #fee2e2; font-weight: 700; }
+QPushButton#modeButton { background: #111827; border: 1px solid #334155; color: #9fb0c6; padding: 6px 16px; font-weight: 700; }
+QPushButton#modeButton:checked { background: #134e4a; border-color: #14b8a6; color: #f0fdfa; }
 
 QToolButton { background: #1c2637; border: 1px solid #334155; border-radius: 6px; padding: 4px; }
 QToolButton:hover { background: #263449; }

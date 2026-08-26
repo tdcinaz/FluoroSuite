@@ -35,6 +35,10 @@ class FrameView(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setStyleSheet("background: #000000; border: 1px solid #253044; border-radius: 8px;")
 
+    def set_roi_color(self, color: str) -> None:
+        self._roi_color = QColor(color)
+        self.update()
+
     # -- data -----------------------------------------------------------------
     def set_frame(self, frame: np.ndarray | None) -> None:
         self._frame = frame
