@@ -114,6 +114,11 @@ class RecordingViewer(QWidget):
             frame = self._correction.apply(frame)
         self.frame_view.set_frame(frame)
 
+    def set_correction(self, correction: DarkFieldCorrection | None) -> None:
+        self._correction = correction
+        self.visualization_panel.set_dark_field_available(correction is not None)
+        self._render_current()
+
     def _on_play_toggled(self, playing: bool) -> None:
         if playing:
             self._update_timer_interval()

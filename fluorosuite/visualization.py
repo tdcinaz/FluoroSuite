@@ -8,6 +8,7 @@ contrast, and optional grayscale inversion.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 import numpy as np
 from PySide6.QtGui import QImage
@@ -92,3 +93,23 @@ class DarkFieldCorrection:
             return cls(path)
         except (OSError, ValueError):
             return None
+
+    @classmethod
+    def calibrate(cls, frames: np.ndarray, path) -> "DarkFieldCorrection":
+        """Build and persist a dark-field calibration from a stack of dark frames.
+
+        ``frames`` is a (count, ROWS, COLUMNS) array captured with the X-ray source
+        off. The per-pixel mean becomes the dark offset; ``reference`` is its mean so
+        the correction removes fixed-pattern offsets while preserving brightness.
+        """
+        stack = np.asarray(frames, dtype=np.float32)
+        if stack.ndim != 3 or stack.shape[1:] != (ROWS, COLUMNS):
+            raise ValueError(f"expected frames shaped (count, {ROWS}, {COLUMNS}), got {stack.shape}")
+        if stack.shape[0] == 0:
+            raise ValueError("dark-field calibration needs at least one frame")
+        dark = stack.mean(axis=0)
+        reference = float(dark.mean())
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(path, dark=dark.astype(np.float32), reference=np.float32(reference))
+        return cls(path)

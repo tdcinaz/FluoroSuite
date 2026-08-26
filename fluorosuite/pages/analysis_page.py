@@ -348,6 +348,11 @@ class AnalysisPage(QWidget):
         for panel in (self.panel_a, self.panel_b):
             panel.set_visualization(visualization)
 
+    def set_correction(self, correction: DarkFieldCorrection | None) -> None:
+        for panel in (self.panel_a, self.panel_b):
+            panel.set_correction(correction)
+        self.visualization_panel.set_dark_field_available(correction is not None)
+
     def _on_panel_a_opened(self, info: object) -> None:  # noqa: ARG002
         self._pause()
         frame = self.panel_a.current_frame

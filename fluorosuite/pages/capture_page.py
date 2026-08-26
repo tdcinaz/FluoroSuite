@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -11,18 +11,23 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from ..capture import LatestFrame, PreviewStore, Recorder
-from ..config import COLUMNS, ROWS
+from ..capture import LatestFrame, PreviewStore, Recorder, is_exposure
+from ..config import COLUMNS, DARK_FIELD_FILE, ROWS
 from ..visualization import DarkFieldCorrection, Visualization
 from ..widgets import FrameView, VisualizationPanel
 
+CALIBRATION_FRAMES = 64
+
 
 class CapturePage(QWidget):
+    calibrated = Signal(object)  # emits a DarkFieldCorrection
+
     def __init__(
         self,
         latest: LatestFrame,
@@ -48,6 +53,7 @@ class CapturePage(QWidget):
         side.setContentsMargins(0, 0, 0, 0)
         side.setSpacing(16)
         side.addWidget(self._wrap_card(self.visualization_panel))
+        side.addWidget(self._build_calibration_card())
         side.addWidget(self._build_recording_card())
         side.addStretch(1)
         side_widget = QWidget()
@@ -69,6 +75,13 @@ class CapturePage(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._refresh)
+
+        self._calibrating = False
+        self._calibration_frames: list[np.ndarray] = []
+        self._calibration_last_seq = -1
+        self._calibration_timer = QTimer(self)
+        self._calibration_timer.setInterval(20)
+        self._calibration_timer.timeout.connect(self._collect_calibration_frame)
 
     # -- construction ---------------------------------------------------------
     def _wrap_card(self, inner: QWidget) -> QFrame:
@@ -104,6 +117,36 @@ class CapturePage(QWidget):
         layout.addWidget(self.dropped_label)
         layout.addWidget(self.rec_badge)
         return bar
+
+    def _build_calibration_card(self) -> QFrame:
+        card = QFrame()
+        card.setObjectName("card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("Dark-field calibration")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+
+        hint = QLabel(
+            "Turn the X-ray source OFF, then capture dark frames to measure each "
+            "pixel's offset."
+        )
+        hint.setObjectName("subtleLabel")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.calibrate_button = QPushButton("Calibrate dark-field")
+        self.calibrate_button.clicked.connect(self._start_calibration)
+        layout.addWidget(self.calibrate_button)
+
+        state = "Calibrated." if self._correction is not None else "Not calibrated."
+        self.calibration_status = QLabel(state)
+        self.calibration_status.setObjectName("subtleLabel")
+        self.calibration_status.setWordWrap(True)
+        layout.addWidget(self.calibration_status)
+        return card
 
     def _build_recording_card(self) -> QFrame:
         card = QFrame()
@@ -167,6 +210,73 @@ class CapturePage(QWidget):
         self._visualization = visualization
         self.frame_view.set_visualization(visualization)
         self._last_seq = -1  # force re-render with the new dark-field choice
+
+    # -- dark-field calibration ----------------------------------------------
+    def _start_calibration(self) -> None:
+        if self._calibrating:
+            return
+        status = self._store.snapshot()
+        if status["state"] != "live" or status["error"]:
+            QMessageBox.warning(
+                self,
+                "Dark-field calibration",
+                "No live stream. Wait for the camera before calibrating.",
+            )
+            return
+        if status["exposure"]:
+            QMessageBox.warning(
+                self,
+                "Dark-field calibration",
+                "Turn the X-ray source OFF. Dark-field must be captured with no exposure.",
+            )
+            return
+        self._calibrating = True
+        self._calibration_frames = []
+        self._calibration_last_seq = -1
+        self.calibrate_button.setEnabled(False)
+        self.calibration_status.setText(f"Capturing dark frames\u2026 0/{CALIBRATION_FRAMES}")
+        self._calibration_timer.start()
+
+    def _collect_calibration_frame(self) -> None:
+        if not self._calibrating:
+            return
+        seq, pixels = self._latest.snapshot()
+        if pixels is None or seq == self._calibration_last_seq:
+            return
+        self._calibration_last_seq = seq
+        if is_exposure(pixels):
+            self._abort_calibration("Exposure detected. Keep the X-ray source OFF and retry.")
+            return
+        frame = np.frombuffer(pixels, dtype="<u2").reshape((ROWS, COLUMNS))
+        self._calibration_frames.append(frame.astype(np.float32))
+        captured = len(self._calibration_frames)
+        self.calibration_status.setText(f"Capturing dark frames\u2026 {captured}/{CALIBRATION_FRAMES}")
+        if captured >= CALIBRATION_FRAMES:
+            self._finish_calibration()
+
+    def _finish_calibration(self) -> None:
+        self._calibration_timer.stop()
+        stack = np.stack(self._calibration_frames)
+        try:
+            correction = DarkFieldCorrection.calibrate(stack, DARK_FIELD_FILE)
+        except (OSError, ValueError) as error:
+            self._abort_calibration(f"Calibration failed: {error}")
+            return
+        self._calibrating = False
+        self._calibration_frames = []
+        self._correction = correction
+        self.visualization_panel.set_dark_field_available(True)
+        self.calibrate_button.setEnabled(True)
+        self.calibration_status.setText(f"Calibrated from {CALIBRATION_FRAMES} dark frames.")
+        self._last_seq = -1
+        self.calibrated.emit(correction)
+
+    def _abort_calibration(self, message: str) -> None:
+        self._calibration_timer.stop()
+        self._calibrating = False
+        self._calibration_frames = []
+        self.calibrate_button.setEnabled(True)
+        self.calibration_status.setText(message)
 
     def _update_naming(self) -> None:
         try:

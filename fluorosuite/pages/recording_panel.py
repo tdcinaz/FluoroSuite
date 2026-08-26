@@ -112,6 +112,10 @@ class RecordingPanel(QWidget):
         self.frame_view.set_visualization(visualization)
         self._render_current()
 
+    def set_correction(self, correction: DarkFieldCorrection | None) -> None:
+        self._correction = correction
+        self._render_current()
+
     def frames_array(self) -> np.ndarray | None:
         if self._reader is None:
             return None

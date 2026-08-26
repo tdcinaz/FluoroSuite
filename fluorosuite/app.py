@@ -32,6 +32,7 @@ class MainWindow(QMainWindow):
         self.capture_page = CapturePage(self._latest, self._store, self._recorder, self._correction)
         self.playback_page = PlaybackPage(LIVE_DIR, self._correction)
         self.analysis_page = AnalysisPage(LIVE_DIR, self._correction)
+        self.capture_page.calibrated.connect(self._on_calibrated)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.capture_page, "Capture")
@@ -42,6 +43,11 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage(f"Listening for camera stream on {stream_host}:{stream_port}")
         self.capture_page.start()
+
+    def _on_calibrated(self, correction: DarkFieldCorrection) -> None:
+        self._correction = correction
+        self.playback_page.set_correction(correction)
+        self.analysis_page.set_correction(correction)
 
     def _on_tab_changed(self, index: int) -> None:
         widget = self.tabs.widget(index)
