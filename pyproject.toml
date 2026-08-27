@@ -12,6 +12,7 @@ dependencies = [
 
 [project.scripts]
 fluorosuite = "fluorosuite.app:main"
+fluorosuite-export = "fluorosuite.export:main"
 
 [build-system]
 requires = ["hatchling"]

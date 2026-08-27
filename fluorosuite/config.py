@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CAPTURES_DIR = ROOT / "captures"
 LIVE_DIR = CAPTURES_DIR / "live"
+EXPORT_DIR = CAPTURES_DIR / "exports"
 CALIBRATION_DIR = CAPTURES_DIR / "calibration"
 DARK_FIELD_FILE = CALIBRATION_DIR / "dark-field.npz"
 SETTINGS_FILE = CAPTURES_DIR / ".cache.json"
