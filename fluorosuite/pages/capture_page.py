@@ -18,8 +18,16 @@ from PySide6.QtWidgets import (
 )
 
 from ..capture import LatestFrame, PreviewStore, Recorder, is_exposure
-from ..config import COLUMNS, DARK_FIELD_FILE, ROWS
-from ..visualization import DarkFieldCorrection, Visualization
+from ..config import (
+    COLUMNS,
+    DARK_FIELD_FILE,
+    PREVIEW_JPEG_QUALITY,
+    PREVIEW_STREAM_HOST,
+    PREVIEW_STREAM_PORT,
+    ROWS,
+)
+from ..streaming import PreviewStreamServer
+from ..visualization import DarkFieldCorrection, Visualization, render_gray
 from ..widgets import FrameView, VisualizationPanel
 
 CALIBRATION_FRAMES = 64
@@ -42,7 +50,9 @@ class CapturePage(QWidget):
         self._recorder = recorder
         self._correction = correction
         self._visualization = Visualization.default()
+        self._lut = self._visualization.build_lut()
         self._last_seq = -1
+        self._preview_server: PreviewStreamServer | None = None
 
         self.frame_view = FrameView("Waiting for camera stream")
         self.visualization_panel = VisualizationPanel()
@@ -53,6 +63,7 @@ class CapturePage(QWidget):
         side.setContentsMargins(0, 0, 0, 0)
         side.setSpacing(16)
         side.addWidget(self._wrap_card(self.visualization_panel))
+        side.addWidget(self._build_stream_card())
         side.addWidget(self._build_calibration_card())
         side.addWidget(self._build_recording_card())
         side.addStretch(1)
@@ -117,6 +128,41 @@ class CapturePage(QWidget):
         layout.addWidget(self.dropped_label)
         layout.addWidget(self.rec_badge)
         return bar
+
+    def _build_stream_card(self) -> QFrame:
+        card = QFrame()
+        card.setObjectName("card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("Network preview")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+
+        hint = QLabel(
+            "Broadcast the live 8-bit preview (with the current visualization) to "
+            "other machines on this network. Open the URL in any web browser."
+        )
+        hint.setObjectName("subtleLabel")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.stream_button = QPushButton("Start preview stream")
+        self.stream_button.setCheckable(True)
+        self.stream_button.toggled.connect(self._toggle_stream)
+        layout.addWidget(self.stream_button)
+
+        self.stream_url = QLabel("Stopped")
+        self.stream_url.setObjectName("statusValue")
+        self.stream_url.setWordWrap(True)
+        self.stream_url.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.stream_url)
+
+        self.stream_clients = QLabel("")
+        self.stream_clients.setObjectName("subtleLabel")
+        layout.addWidget(self.stream_clients)
+        return card
 
     def _build_calibration_card(self) -> QFrame:
         card = QFrame()
@@ -205,11 +251,40 @@ class CapturePage(QWidget):
     def stop(self) -> None:
         self._timer.stop()
 
+    def shutdown(self) -> None:
+        if self._preview_server is not None:
+            self._preview_server.stop()
+            self._preview_server = None
+
     # -- handlers -------------------------------------------------------------
     def _on_visualization_changed(self, visualization: Visualization) -> None:
         self._visualization = visualization
+        self._lut = visualization.build_lut()
         self.frame_view.set_visualization(visualization)
         self._last_seq = -1  # force re-render with the new dark-field choice
+
+    def _toggle_stream(self, enabled: bool) -> None:
+        if enabled:
+            server = PreviewStreamServer(
+                PREVIEW_STREAM_HOST, PREVIEW_STREAM_PORT, PREVIEW_JPEG_QUALITY
+            )
+            try:
+                server.start()
+            except OSError as error:
+                self.stream_button.blockSignals(True)
+                self.stream_button.setChecked(False)
+                self.stream_button.blockSignals(False)
+                self.stream_url.setText(f"Cannot start: {error}")
+                return
+            self._preview_server = server
+            self.stream_button.setText("Stop preview stream")
+            self.stream_url.setText(server.url())
+            self.stream_clients.setText("Viewers: 0")
+        else:
+            self.shutdown()
+            self.stream_button.setText("Start preview stream")
+            self.stream_url.setText("Stopped")
+            self.stream_clients.setText("")
 
     # -- dark-field calibration ----------------------------------------------
     def _start_calibration(self) -> None:
@@ -306,6 +381,10 @@ class CapturePage(QWidget):
             if self._visualization.dark_field and self._correction is not None:
                 frame = self._correction.apply(frame)
             self.frame_view.set_frame(frame)
+            if self._preview_server is not None:
+                self._preview_server.submit(render_gray(frame, self._lut))
+        if self._preview_server is not None:
+            self.stream_clients.setText(f"Viewers: {self._preview_server.client_count()}")
         self.visualization_panel.set_suggested_window(status["suggested"])
 
     def _update_badges(self, status: dict) -> None:

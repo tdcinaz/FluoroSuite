@@ -29,6 +29,11 @@ STREAM_HOST = "10.200.0.1"
 STREAM_PORT = 5802
 PUSH_PORT = 5801
 
+# Live 8-bit preview served to other machines on the LAN as MJPEG over HTTP.
+PREVIEW_STREAM_HOST = "0.0.0.0"
+PREVIEW_STREAM_PORT = 8089
+PREVIEW_JPEG_QUALITY = 80
+
 MAX_STREAM_PACKET = 65535
 MAX_FRAME_SIZE = 4 * 1024 * 1024
 GVCP_CONTROL_PORT = 3956  # never parse the control channel as GVSP stream data

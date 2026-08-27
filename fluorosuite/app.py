@@ -62,6 +62,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: ANN001
         self._recorder.set_enabled(False)
+        self.capture_page.shutdown()
         self._receiver.stop()
         super().closeEvent(event)
 
