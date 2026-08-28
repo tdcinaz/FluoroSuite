@@ -33,6 +33,13 @@ QPushButton#primaryButton[analysisRunning="true"]:hover { background: #ca8a04; }
 QPushButton#recordButton:checked { background: #7f1d1d; border-color: #f87171; color: #fee2e2; font-weight: 700; }
 QPushButton#modeButton { background: #111827; border: 1px solid #334155; color: #9fb0c6; padding: 6px 16px; font-weight: 700; }
 QPushButton#modeButton:checked { background: #134e4a; border-color: #14b8a6; color: #f0fdfa; }
+QPushButton#playbackPlayButton, QPushButton#playbackSeekButton { min-width: 38px; min-height: 30px; padding: 3px 8px; font-weight: 800; }
+QPushButton#playbackPlayButton { background: #134e4a; border-color: #14b8a6; color: #f8fafc; font-size: 16px; }
+QPushButton#playbackPlayButton:hover { background: #0f766e; border-color: #5eead4; }
+QPushButton#playbackPlayButton[playing="true"] { background: #a16207; border-color: #facc15; color: #f8fafc; }
+QPushButton#playbackPlayButton[playing="true"]:hover { background: #ca8a04; border-color: #fde047; }
+QPushButton#playbackSeekButton { background: #1c2637; border-color: #475569; color: #f8fafc; font-size: 11px; }
+QPushButton#playbackSeekButton:hover { background: #263449; border-color: #cbd5e1; }
 
 QToolButton { background: #1c2637; border: 1px solid #334155; border-radius: 6px; padding: 4px; }
 QToolButton:hover { background: #263449; }
@@ -56,8 +63,8 @@ QLineEdit { background: #111827; border: 1px solid #5b718c; border-radius: 5px; 
 QLineEdit:focus { border-color: #5eead4; }
 QCheckBox { color: #cdd8d2; }
 
-QSplitter::handle:horizontal { background: #1c2637; border-left: 1px solid #334155; border-right: 1px solid #253044; }
-QSplitter::handle:vertical { background: #1c2637; border-top: 1px solid #334155; border-bottom: 1px solid #253044; }
+QSplitter::handle:horizontal { background: transparent; border: none; }
+QSplitter::handle:vertical { background: transparent; border: none; }
 
 QFrame#card { background: #111827; border: 1px solid #253044; border-radius: 8px; }
 QFrame#stageDrawer { background: #0f172a; border: 1px solid #273449; border-radius: 8px; }
