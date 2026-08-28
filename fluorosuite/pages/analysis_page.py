@@ -5,6 +5,7 @@ Supports a single recording or a two-video side-by-side comparison.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pyqtgraph as pg
@@ -40,6 +41,7 @@ from .recording_panel import RecordingPanel
 class _AnalysisSignals(QObject):
     finished = Signal(int, object, object)
     failed = Signal(int, object)
+    progress = Signal(int, int, float)
 
 
 class _AnalysisTask(QRunnable):
@@ -61,9 +63,22 @@ class _AnalysisTask(QRunnable):
             self.signals.finished.emit(self.generation, None, None)
             return
         try:
-            result_a = self._analyze_panel(self.inputs[0], self.parameters)
+            result_a = self._analyze_panel(
+                self.inputs[0],
+                self.parameters,
+                lambda value: self.signals.progress.emit(self.generation, 0, value),
+                lambda: not self.cancelled,
+            )
+            if self.cancelled:
+                self.signals.finished.emit(self.generation, None, None)
+                return
             result_b = (
-                self._analyze_panel(self.inputs[1], self.parameters)
+                self._analyze_panel(
+                    self.inputs[1],
+                    self.parameters,
+                    lambda value: self.signals.progress.emit(self.generation, 1, value),
+                    lambda: not self.cancelled,
+                )
                 if len(self.inputs) == 2
                 else None
             )
@@ -84,6 +99,8 @@ class _AnalysisTask(QRunnable):
     def _analyze_panel(
         inputs: tuple[RecordingReader, Circle, RecordingInfo | None, Visualization, DarkFieldCorrection | None] | None,
         parameters: ROIParameters,
+        progress: Callable[[float], None],
+        should_continue: Callable[[], bool],
     ) -> ROIResidenceResult | None:
         if inputs is None:
             return None
@@ -92,7 +109,15 @@ class _AnalysisTask(QRunnable):
         frames = reader.iter_frames()
         if visualization.dark_field and correction is not None:
             frames = (correction.apply(frame) for frame in frames)
-        result = analyze_roi_residence_stream(frames, roi, parameters, fps)
+        result = analyze_roi_residence_stream(
+            frames,
+            roi,
+            parameters,
+            fps,
+            reader.frame_count,
+            progress,
+            should_continue,
+        )
         if result.time.size == 0:
             return None
         return result
@@ -275,6 +300,7 @@ class AnalysisPage(QWidget):
         header.addStretch(1)
         self.run_button = QPushButton("Run analysis")
         self.run_button.setObjectName("primaryButton")
+        self.run_button.setProperty("analysisRunning", False)
         self.run_button.clicked.connect(self._run_analysis)
         header.addWidget(self.run_button)
         layout.addLayout(header)
@@ -396,6 +422,8 @@ class AnalysisPage(QWidget):
     # -- handlers -------------------------------------------------------------
     def _on_stage_enabled(self, enabled: bool) -> None:
         self._analysis_generation += 1
+        if not enabled:
+            self._set_analysis_running(False)
         for panel in (self.panel_a, self.panel_b):
             panel.set_roi_editable(enabled)
         if enabled:
@@ -448,12 +476,18 @@ class AnalysisPage(QWidget):
         generation = self._analysis_generation
         panels = self._playback_panels()
         if not panels:
+            self._set_analysis_running(False)
             self._clear_results()
             return
         task = _AnalysisTask(generation, panels, self._parameters())
         for previous in self._analysis_tasks:
             previous.cancelled = True
+        self._set_analysis_running(True)
+        for panel in panels:
+            if panel.roi is not None:
+                panel.frame_view.set_roi_processing(True)
         task.signals.finished.connect(self._apply_analysis_results)
+        task.signals.progress.connect(self._on_analysis_progress)
         task.signals.failed.connect(self._analysis_failed)
         self._analysis_tasks.add(task)
         self._analysis_pool.start(task)
@@ -472,6 +506,9 @@ class AnalysisPage(QWidget):
             self._analysis_tasks.remove(task)
         if generation != self._analysis_generation:
             return
+        self._set_analysis_running(False)
+        for panel in (self.panel_a, self.panel_b):
+            panel.frame_view.set_roi_processing(False)
 
         if result_a is not None:
             self._curve_a.setData(result_a.time, result_a.contrast)
@@ -492,7 +529,23 @@ class AnalysisPage(QWidget):
         if task is not None:
             self._analysis_tasks.remove(task)
         if generation == self._analysis_generation:
+            self._set_analysis_running(False)
+            for panel in (self.panel_a, self.panel_b):
+                panel.frame_view.set_roi_processing(False)
             self.stage.set_status(f"Analysis failed: {error}")
+
+    def _on_analysis_progress(self, generation: int, panel_index: int, progress: float) -> None:
+        if generation != self._analysis_generation:
+            return
+        panels = self._playback_panels()
+        if panel_index < len(panels):
+            panels[panel_index].frame_view.set_roi_processing(True, progress)
+
+    def _set_analysis_running(self, running: bool) -> None:
+        self.run_button.setProperty("analysisRunning", running)
+        self.run_button.style().unpolish(self.run_button)
+        self.run_button.style().polish(self.run_button)
+        self.run_button.update()
 
     def _update_cards(
         self,

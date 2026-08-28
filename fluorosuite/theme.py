@@ -28,6 +28,8 @@ QPushButton:hover { background: #263449; border-color: #5eead4; }
 QPushButton:disabled { color: #64748b; background: #111827; }
 QPushButton#primaryButton { background: #0f766e; border-color: #14b8a6; font-weight: 700; }
 QPushButton#primaryButton:hover { background: #0d9488; }
+QPushButton#primaryButton[analysisRunning="true"] { background: #a16207; border-color: #facc15; color: #fef9c3; }
+QPushButton#primaryButton[analysisRunning="true"]:hover { background: #ca8a04; }
 QPushButton#recordButton:checked { background: #7f1d1d; border-color: #f87171; color: #fee2e2; font-weight: 700; }
 QPushButton#modeButton { background: #111827; border: 1px solid #334155; color: #9fb0c6; padding: 6px 16px; font-weight: 700; }
 QPushButton#modeButton:checked { background: #134e4a; border-color: #14b8a6; color: #f0fdfa; }
