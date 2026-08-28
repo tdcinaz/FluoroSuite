@@ -95,3 +95,12 @@ class RecordingReader:
         with open(self.path, "rb") as handle:
             data = handle.read(self.frame_count * PIXEL_BYTES)
         return np.frombuffer(data, dtype="<u2").reshape((self.frame_count, ROWS, COLUMNS))
+
+    def iter_frames(self):
+        """Yield frames one at a time without loading the recording into memory."""
+        with open(self.path, "rb") as handle:
+            for _ in range(self.frame_count):
+                data = handle.read(PIXEL_BYTES)
+                if len(data) != PIXEL_BYTES:
+                    return
+                yield np.frombuffer(data, dtype="<u2").reshape((ROWS, COLUMNS))

@@ -6,7 +6,7 @@ aneurysm ROI circle, but the registry keeps the app open to further stages.
 """
 
 from .models import Circle, ROIParameters, ROIResidenceResult, StageInstance
-from .stages import STAGE_REGISTRY, StageDefinition, analyze_roi_residence
+from .stages import STAGE_REGISTRY, StageDefinition, analyze_roi_residence, analyze_roi_residence_stream
 
 __all__ = [
     "Circle",
@@ -16,4 +16,5 @@ __all__ = [
     "STAGE_REGISTRY",
     "StageDefinition",
     "analyze_roi_residence",
+    "analyze_roi_residence_stream",
 ]

@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, QTimer
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDoubleSpinBox,
@@ -28,12 +28,74 @@ from ..pipeline import (
     Circle,
     ROIParameters,
     ROIResidenceResult,
-    analyze_roi_residence,
+    analyze_roi_residence_stream,
 )
 from ..theme import TRACE_A, TRACE_B
+from ..recordings import RecordingInfo, RecordingReader
 from ..visualization import DarkFieldCorrection, Visualization, auto_window
 from ..widgets import MetricCard, PlaybackBar, StageDrawer, VisualizationPanel
 from .recording_panel import RecordingPanel
+
+
+class _AnalysisSignals(QObject):
+    finished = Signal(int, object, object)
+    failed = Signal(int, object)
+
+
+class _AnalysisTask(QRunnable):
+    def __init__(
+        self,
+        generation: int,
+        panels: tuple[RecordingPanel, ...],
+        parameters: ROIParameters,
+    ) -> None:
+        super().__init__()
+        self.generation = generation
+        self.inputs = tuple(self._snapshot_panel(panel) for panel in panels)
+        self.parameters = parameters
+        self.signals = _AnalysisSignals()
+        self.cancelled = False
+
+    def run(self) -> None:
+        if self.cancelled:
+            self.signals.finished.emit(self.generation, None, None)
+            return
+        try:
+            result_a = self._analyze_panel(self.inputs[0], self.parameters)
+            result_b = (
+                self._analyze_panel(self.inputs[1], self.parameters)
+                if len(self.inputs) == 2
+                else None
+            )
+        except Exception as error:  # pragma: no cover - defensive worker boundary
+            self.signals.failed.emit(self.generation, error)
+            return
+        self.signals.finished.emit(self.generation, result_a, result_b)
+
+    @staticmethod
+    def _snapshot_panel(
+        panel: RecordingPanel,
+    ) -> tuple[RecordingReader, Circle, RecordingInfo | None, Visualization, DarkFieldCorrection | None] | None:
+        if panel.roi is None or panel._reader is None:
+            return None
+        return panel._reader, panel.roi, panel.info, panel._visualization, panel._correction
+
+    @staticmethod
+    def _analyze_panel(
+        inputs: tuple[RecordingReader, Circle, RecordingInfo | None, Visualization, DarkFieldCorrection | None] | None,
+        parameters: ROIParameters,
+    ) -> ROIResidenceResult | None:
+        if inputs is None:
+            return None
+        reader, roi, info, visualization, correction = inputs
+        fps = info.fps if info else 15.0
+        frames = reader.iter_frames()
+        if visualization.dark_field and correction is not None:
+            frames = (correction.apply(frame) for frame in frames)
+        result = analyze_roi_residence_stream(frames, roi, parameters, fps)
+        if result.time.size == 0:
+            return None
+        return result
 
 
 class AnalysisPage(QWidget):
@@ -45,6 +107,10 @@ class AnalysisPage(QWidget):
     ) -> None:
         super().__init__(parent)
         self._compare = False
+        self._analysis_generation = 0
+        self._analysis_tasks: set[_AnalysisTask] = set()
+        self._analysis_pool = QThreadPool(self)
+        self._analysis_pool.setMaxThreadCount(1)
 
         self.panel_a = RecordingPanel(live_dir, correction, "Video A")
         self.panel_a.set_roi_color(TRACE_A)
@@ -329,6 +395,7 @@ class AnalysisPage(QWidget):
 
     # -- handlers -------------------------------------------------------------
     def _on_stage_enabled(self, enabled: bool) -> None:
+        self._analysis_generation += 1
         for panel in (self.panel_a, self.panel_b):
             panel.set_roi_editable(enabled)
         if enabled:
@@ -368,25 +435,43 @@ class AnalysisPage(QWidget):
         self._run_analysis()
 
     def _on_panel_cleared(self, panel: RecordingPanel) -> None:
+        self._analysis_generation += 1
         panel.frame_view._placeholder = "No recordings found"
         panel.frame_view.update()
         self._sync_playback(reset=True)
         self._clear_results()
 
-    def _analyze_panel(self, panel: RecordingPanel) -> ROIResidenceResult | None:
-        if panel.roi is None or not panel.has_recording():
-            return None
-        frames = panel.frames_array()
-        if frames is None or frames.shape[0] == 0:
-            return None
-        fps = panel.info.fps if panel.info else 15.0
-        return analyze_roi_residence(frames, panel.roi, self._parameters(), fps)
-
     def _run_analysis(self) -> None:
         if not self.stage.is_enabled():
             return
-        result_a = self._analyze_panel(self.panel_a)
-        result_b = self._analyze_panel(self.panel_b) if self._compare else None
+        self._analysis_generation += 1
+        generation = self._analysis_generation
+        panels = self._playback_panels()
+        if not panels:
+            self._clear_results()
+            return
+        task = _AnalysisTask(generation, panels, self._parameters())
+        for previous in self._analysis_tasks:
+            previous.cancelled = True
+        task.signals.finished.connect(self._apply_analysis_results)
+        task.signals.failed.connect(self._analysis_failed)
+        self._analysis_tasks.add(task)
+        self._analysis_pool.start(task)
+
+    def _apply_analysis_results(
+        self,
+        generation: int,
+        result_a: ROIResidenceResult | None,
+        result_b: ROIResidenceResult | None,
+    ) -> None:
+        task = next(
+            (candidate for candidate in self._analysis_tasks if candidate.generation == generation),
+            None,
+        )
+        if task is not None:
+            self._analysis_tasks.remove(task)
+        if generation != self._analysis_generation:
+            return
 
         if result_a is not None:
             self._curve_a.setData(result_a.time, result_a.contrast)
@@ -398,6 +483,16 @@ class AnalysisPage(QWidget):
             self._curve_b.setData([], [])
 
         self._update_cards(result_a, result_b)
+
+    def _analysis_failed(self, generation: int, error: object) -> None:
+        task = next(
+            (candidate for candidate in self._analysis_tasks if candidate.generation == generation),
+            None,
+        )
+        if task is not None:
+            self._analysis_tasks.remove(task)
+        if generation == self._analysis_generation:
+            self.stage.set_status(f"Analysis failed: {error}")
 
     def _update_cards(
         self,
