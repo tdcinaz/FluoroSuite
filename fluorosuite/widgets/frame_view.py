@@ -30,6 +30,8 @@ class FrameView(QWidget):
         self.roi_radius = 70
         self._roi: Circle | None = None
         self._roi_color = QColor(ROI_COLOR)
+        self._roi_processing = False
+        self._roi_progress = 0.0
 
         self.setMinimumSize(320, 320)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -59,6 +61,11 @@ class FrameView(QWidget):
         self._roi = roi
         if roi is not None:
             self.roi_radius = roi.radius
+        self.update()
+
+    def set_roi_processing(self, processing: bool, progress: float = 0.0) -> None:
+        self._roi_processing = processing
+        self._roi_progress = min(1.0, max(0.0, float(progress))) if processing else 0.0
         self.update()
 
     def roi(self) -> Circle | None:
@@ -94,8 +101,17 @@ class FrameView(QWidget):
             center = self._frame_to_display(QPoint(self._roi.center_x, self._roi.center_y))
             scale = self._display_rect.width() / max(1, self._frame.shape[1])
             radius = max(1, round(self._roi.radius * scale))
-            painter.setPen(QPen(self._roi_color, 2))
-            painter.setBrush(QColor(self._roi_color.red(), self._roi_color.green(), self._roi_color.blue(), 40))
+            roi_color = QColor("#facc15") if self._roi_processing else self._roi_color
+            painter.setPen(QPen(roi_color, 2))
+            if self._roi_processing:
+                painter.setBrush(QColor(roi_color.red(), roi_color.green(), roi_color.blue(), 55))
+                bounds = QRect(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawPie(bounds, 90 * 16, -round(self._roi_progress * 360 * 16))
+                painter.setPen(QPen(roi_color, 2))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+            else:
+                painter.setBrush(QColor(roi_color.red(), roi_color.green(), roi_color.blue(), 40))
             painter.drawEllipse(center, radius, radius)
             painter.setPen(QColor("#f8fafc"))
             painter.drawText(center + QPoint(radius + 4, -radius), "ROI")

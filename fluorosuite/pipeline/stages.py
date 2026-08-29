@@ -8,6 +8,7 @@ inside the manually placed ROI circle.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable, Iterable
 
 import numpy as np
 
@@ -54,6 +55,45 @@ def analyze_roi_residence(
     roi_mean = np.empty(count, dtype=np.float32)
     for index in range(count):
         roi_mean[index] = float(frames[index][mask].sum()) / pixel_count
+
+    return _analyze_roi_means(roi_mean, parameters, fps)
+
+
+def analyze_roi_residence_stream(
+    frames: Iterable[np.ndarray],
+    circle: Circle,
+    parameters: ROIParameters,
+    fps: float,
+    total_frames: int = 0,
+    progress: Callable[[float], None] | None = None,
+    should_continue: Callable[[], bool] | None = None,
+) -> ROIResidenceResult:
+    """Measure ROI residence from frames yielded without retaining the stack."""
+    mask: np.ndarray | None = None
+    pixel_count = 0
+    roi_means: list[float] = []
+    next_update = 0.01
+    for frame in frames:
+        if should_continue is not None and not should_continue():
+            break
+        if mask is None:
+            mask = circle.mask((int(frame.shape[0]), int(frame.shape[1])))
+            pixel_count = max(1, int(np.count_nonzero(mask)))
+        roi_means.append(float(frame[mask].sum()) / pixel_count)
+        if progress is not None and total_frames > 0:
+            fraction = len(roi_means) / total_frames
+            if fraction >= next_update or fraction >= 1.0:
+                progress(min(1.0, fraction))
+                next_update += 0.01
+    return _analyze_roi_means(np.asarray(roi_means, dtype=np.float32), parameters, fps)
+
+
+def _analyze_roi_means(
+    roi_mean: np.ndarray,
+    parameters: ROIParameters,
+    fps: float,
+) -> ROIResidenceResult:
+    count = int(roi_mean.size)
 
     fps = max(1.0, float(fps))
     time = np.arange(count, dtype=np.float32) / fps

@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSlider,
-    QStyle,
     QWidget,
 )
 
@@ -25,12 +24,17 @@ class PlaybackBar(QWidget):
         self._playing = False
 
         self.play_button = QPushButton()
-        self.play_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        self.play_button.setObjectName("playbackPlayButton")
+        self.play_button.setText("▶")
         self.play_button.setToolTip("Play/Pause")
         self.step_back = QPushButton()
-        self.step_back.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipBackward))
+        self.step_back.setObjectName("playbackSeekButton")
+        self.step_back.setText("◀◀◀")
+        self.step_back.setToolTip("Previous frame")
         self.step_forward = QPushButton()
-        self.step_forward.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaSkipForward))
+        self.step_forward.setObjectName("playbackSeekButton")
+        self.step_forward.setText("▶▶▶")
+        self.step_forward.setToolTip("Next frame")
 
         self.scrub = QSlider(Qt.Orientation.Horizontal)
         self.scrub.setRange(0, 0)
@@ -88,8 +92,11 @@ class PlaybackBar(QWidget):
 
     def set_playing(self, playing: bool) -> None:
         self._playing = playing
-        icon = QStyle.StandardPixmap.SP_MediaPause if playing else QStyle.StandardPixmap.SP_MediaPlay
-        self.play_button.setIcon(self.style().standardIcon(icon))
+        self.play_button.setProperty("playing", playing)
+        self.play_button.setText("||" if playing else "▶")
+        self.play_button.style().unpolish(self.play_button)
+        self.play_button.style().polish(self.play_button)
+        self.play_button.update()
 
     def _toggle(self) -> None:
         self._playing = not self._playing
