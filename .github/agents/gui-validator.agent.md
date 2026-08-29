@@ -21,7 +21,7 @@ You verify GUI fixes for **FluoroSuite** (PySide6 / Qt Widgets + `pyqtgraph`). Y
 1. Take the fixer's change log and the original issue list.
 2. Re-capture each affected screen with the project's capture script, tagging the images so they compare cleanly against the originals:
    `uv run python captures/capture_screens.py --tabs <affected tabs> --suffix -validated`
-   This writes `<tab>_<timestamp>-validated.png` (and a `_window_` variant) to `captures/exports/`. Read those files back, and re-run the same interactions the inspector used to reproduce each defect.
+   This writes one downscaled `<tab>_<timestamp>-validated.png` per tab (capped at 1024px wide) to `captures/exports/`. Read those files back **one at a time** — this runs against a single local vision model, so avoid loading many images at once — and re-run the same interactions the inspector used to reproduce each defect.
 3. Compare before/after: mark each issue **PASS** (resolved, no regression) or **FAIL** (unresolved or new regression), citing the new evidence.
 4. If all pass, conclude the workflow. If any fail, offer the **Fix Remaining Issues** handoff scoped to only the failing items.
 

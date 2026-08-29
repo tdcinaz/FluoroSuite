@@ -1,0 +1,10 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run analysis interaction tests",
+			"type": "shell",
+			"command": "cd /home/t/tdc266/FluoroSuite && QT_QPA_PLATFORM=offscreen python -c \"\nimport sys, os\nos.environ['QT_QPA_PLATFORM'] = 'offscreen'\nfrom PySide6.QtWidgets import QApplication\nfrom PySide6.QtCore import Qt, QTimer\nfrom fluorosuite.pages import AnalysisPage\nfrom fluorosuite.theme import STYLESHEET\nfrom fluorosuite.visualization import DarkFieldCorrection\nfrom fluorosuite.config import DARK_FIELD_FILE, LIVE_DIR\nfrom datetime import datetime\nfrom pathlib import Path\n\napp = QApplication(sys.argv)\napp.setStyleSheet(STYLESHEET)\n\nLIVE_DIR.mkdir(parents=True, exist_ok=True)\ncorrection = DarkFieldCorrection.load(DARK_FIELD_FILE)\npage = AnalysisPage(LIVE_DIR, correction)\npage.resize(1500, 940)\npage.show()\nfor _ in range(5): app.processEvents()\n\n# Test 1: Small window\npage.resize(800, 600)\nfor _ in range(5): app.processEvents()\nstamp = datetime.now().strftime('%Y%m%d_%H%M%S')\noutdir = Path('captures/exports')\noutdir.mkdir(parents=True, exist_ok=True)\npage.grab().save(str(outdir / f'analysis_small_{stamp}.png'))\nprint(f'Saved: analysis_small_{stamp}.png')\n\n# Test 2: Very small window\npage.resize(600, 450)\nfor _ in range(5): app.processEvents()\npage.grab().save(str(outdir / f'analysis_very_small_{stamp}.png'))\nprint(f'Saved: analysis_very_small_{stamp}.png')\n\n# Test 3: Large window\npage.resize(1920, 1080)\nfor _ in range(5): app.processEvents()\npage.grab().save(str(outdir / f'analysis_large_{stamp}.png'))\nprint(f'Saved: analysis_large_{stamp}.png')\n\n# Test 4: Narrow window (force pipeline drawer to be narrow)\npage.resize(500, 800)\nfor _ in range(5): app.processEvents()\npage.grab().save(str(outdir / f'analysis_narrow_{stamp}.png'))\nprint(f'Saved: analysis_narrow_{stamp}.png')\n\npage.close()\nprint('Done')\n\"\n"
+		}
+	]
+}
