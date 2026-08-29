@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -48,7 +47,12 @@ class PlaybackBar(QWidget):
             self.speed.addItem(text, value)
         self.speed.setCurrentIndex(2)
 
-        self.loop = QCheckBox("Loop")
+        self.loop_button = QPushButton()
+        self.loop_button.setObjectName("playbackLoopButton")
+        self.loop_button.setText("↻")
+        self.loop_button.setToolTip("Loop playback")
+        self.loop_button.setCheckable(True)
+        self.loop_button.setFixedWidth(38)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -60,7 +64,7 @@ class PlaybackBar(QWidget):
         layout.addWidget(self.position_label)
         layout.addWidget(QLabel("Speed"))
         layout.addWidget(self.speed)
-        layout.addWidget(self.loop)
+        layout.addWidget(self.loop_button)
 
         self.play_button.clicked.connect(self._toggle)
         self.step_back.clicked.connect(lambda: self._step(-1))
@@ -88,7 +92,7 @@ class PlaybackBar(QWidget):
         return float(self.speed.currentData())
 
     def is_looping(self) -> bool:
-        return self.loop.isChecked()
+        return self.loop_button.isChecked()
 
     def set_playing(self, playing: bool) -> None:
         self._playing = playing
