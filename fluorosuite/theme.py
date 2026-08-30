@@ -62,6 +62,10 @@ QSlider::handle:horizontal:hover { background: #a5f3fc; }
 
 QSpinBox, QDoubleSpinBox, QComboBox { background: #111827; border: 1px solid #334155; border-radius: 6px; padding: 5px; color: #e5edf6; }
 QComboBox::drop-down { border: none; }
+QComboBox#recordingOverlay { background: rgba(11, 16, 24, 220); border-color: #475569; padding: 7px 10px; font-weight: 700; }
+QComboBox#recordingOverlay:hover { background: rgba(28, 38, 55, 235); border-color: #5eead4; }
+QComboBox#recordingOverlay::drop-down { width: 0; border: none; }
+QComboBox#recordingOverlay::down-arrow { image: none; }
 QLineEdit { background: #111827; border: 1px solid #5b718c; border-radius: 5px; padding: 5px 7px; color: #f8fafc; }
 QLineEdit:focus { border-color: #5eead4; }
 QCheckBox { color: #cdd8d2; }

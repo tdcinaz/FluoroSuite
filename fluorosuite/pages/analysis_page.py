@@ -137,9 +137,9 @@ class AnalysisPage(QWidget):
         self._analysis_pool = QThreadPool(self)
         self._analysis_pool.setMaxThreadCount(1)
 
-        self.panel_a = RecordingPanel(live_dir, correction, "Video A")
+        self.panel_a = RecordingPanel(live_dir, correction)
         self.panel_a.set_roi_color(TRACE_A)
-        self.panel_b = RecordingPanel(live_dir, correction, "Video B")
+        self.panel_b = RecordingPanel(live_dir, correction)
         self.panel_b.set_roi_color(TRACE_B)
 
         self.playback_bar = PlaybackBar()
@@ -322,8 +322,8 @@ class AnalysisPage(QWidget):
         self.plot.setLabel("left", "Contrast (baseline - ROI)")
         self.plot.showGrid(x=True, y=True, alpha=0.2)
         self._legend = self.plot.addLegend(offset=(-10, 10))
-        self._curve_a = self.plot.plot(pen=pg.mkPen(TRACE_A, width=2.5), name="Video A")
-        self._curve_b = self.plot.plot(pen=pg.mkPen(TRACE_B, width=2.5), name="Video B")
+        self._curve_a = self.plot.plot(pen=pg.mkPen(TRACE_A, width=2.5), name="A")
+        self._curve_b = self.plot.plot(pen=pg.mkPen(TRACE_B, width=2.5), name="B")
         layout.addWidget(self.plot, 1)
         return panel
 
@@ -448,8 +448,9 @@ class AnalysisPage(QWidget):
             panel.set_correction(correction)
         self.visualization_panel.set_dark_field_available(correction is not None)
 
-    def _on_panel_a_opened(self, info: object) -> None:  # noqa: ARG002
+    def _on_panel_a_opened(self, info: RecordingInfo) -> None:
         self._pause()
+        self._legend.getLabel(self._curve_a).setText(info.name)
         frame = self.panel_a.current_frame
         if frame is not None:
             level, width = auto_window(frame)
@@ -457,8 +458,9 @@ class AnalysisPage(QWidget):
         self._sync_playback(reset=True)
         self._run_analysis()
 
-    def _on_panel_b_opened(self, info: object) -> None:  # noqa: ARG002
+    def _on_panel_b_opened(self, info: RecordingInfo) -> None:
         self._pause()
+        self._legend.getLabel(self._curve_b).setText(info.name)
         self._sync_playback(reset=True)
         self._run_analysis()
 

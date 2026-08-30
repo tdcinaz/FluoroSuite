@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
-from PySide6.QtWidgets import QSizePolicy, QWidget
+from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QResizeEvent, QShowEvent
+from PySide6.QtWidgets import QComboBox, QSizePolicy, QWidget
 
 from ..pipeline.models import Circle
 from ..theme import ROI_COLOR
@@ -25,6 +25,7 @@ class FrameView(QWidget):
         self._qimage = None
         self._display_rect = QRect()
         self._placeholder = placeholder
+        self._overlay_widget: QWidget | None = None
 
         self.roi_editable = False
         self.roi_radius = 70
@@ -36,6 +37,24 @@ class FrameView(QWidget):
         self.setMinimumSize(320, 320)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setStyleSheet("background: #000000; border: 1px solid #253044; border-radius: 8px;")
+
+    def set_overlay_widget(self, widget: QWidget) -> None:
+        self._overlay_widget = widget
+        widget.setParent(self)
+        if isinstance(widget, QComboBox):
+            widget.currentTextChanged.connect(self.update_overlay_geometry)
+        widget.show()
+        self.update_overlay_geometry()
+
+    def update_overlay_geometry(self) -> None:
+        if self._overlay_widget is None:
+            return
+        margin = 12
+        available_width = max(0, self.width() - margin * 2)
+        preferred_width = self._overlay_widget.sizeHint().width()
+        width = min(420, available_width, preferred_width)
+        self._overlay_widget.setGeometry(margin, margin, width, self._overlay_widget.sizeHint().height())
+        self._overlay_widget.raise_()
 
     def set_roi_color(self, color: str) -> None:
         self._roi_color = QColor(color)
@@ -115,6 +134,14 @@ class FrameView(QWidget):
             painter.drawEllipse(center, radius, radius)
             painter.setPen(QColor("#f8fafc"))
             painter.drawText(center + QPoint(radius + 4, -radius), "ROI")
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self.update_overlay_geometry()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        self.update_overlay_geometry()
 
     def _fit_rect(self, image_width: int, image_height: int) -> QRect:
         available = self.rect()

@@ -24,7 +24,6 @@ class PlaybackPage(RecordingViewer):
         center = QVBoxLayout()
         center.setContentsMargins(0, 0, 0, 0)
         center.setSpacing(12)
-        center.addLayout(self._build_selector_row())
         center.addWidget(self.frame_view, 1)
         center.addWidget(self.playback_bar)
 

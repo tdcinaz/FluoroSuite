@@ -9,12 +9,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from ..pipeline import Circle
 from ..recordings import RecordingInfo, RecordingReader, list_recordings
@@ -34,7 +29,6 @@ class RecordingPanel(QWidget):
         self,
         live_dir: Path,
         correction: DarkFieldCorrection | None,
-        title: str,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -46,10 +40,9 @@ class RecordingPanel(QWidget):
         self._current_frame: np.ndarray | None = None
         self._roi: Circle | None = None
 
-        self.title_label = QLabel(title)
-        self.title_label.setObjectName("sectionTitle")
-        self.recording_selector = RecordingSelector()
         self.frame_view = FrameView("Select a recording")
+        self.recording_selector = RecordingSelector()
+        self.frame_view.set_overlay_widget(self.recording_selector)
 
         self.recording_selector.currentIndexChanged.connect(self._open_selected)
         self.recording_selector.popupAboutToShow.connect(self.refresh_recordings)
@@ -60,13 +53,7 @@ class RecordingPanel(QWidget):
     def _build_layout(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
-
-        header = QHBoxLayout()
-        header.setSpacing(8)
-        header.addWidget(self.title_label)
-        header.addWidget(self.recording_selector, 1)
-        layout.addLayout(header)
+        layout.setSpacing(0)
         layout.addWidget(self.frame_view, 1)
 
     # -- public API -----------------------------------------------------------
@@ -139,8 +126,9 @@ class RecordingPanel(QWidget):
         self.recording_selector.blockSignals(True)
         self.recording_selector.clear()
         for info in recordings:
-            self.recording_selector.addItem(info.label(), info)
+            self.recording_selector.addItem(info.name, info)
         self.recording_selector.blockSignals(False)
+        self.frame_view.update_overlay_geometry()
         if not recordings:
             self._reader = None
             self._info = None

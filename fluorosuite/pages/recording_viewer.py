@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
+from PySide6.QtWidgets import QWidget
 
 from ..recordings import RecordingInfo, RecordingReader, list_recordings
 from ..visualization import DarkFieldCorrection, Visualization
@@ -31,8 +31,9 @@ class RecordingViewer(QWidget):
         self._info: RecordingInfo | None = None
         self._current_frame: np.ndarray | None = None
 
-        self.recording_selector = RecordingSelector()
         self.frame_view = FrameView("Select a recording")
+        self.recording_selector = RecordingSelector()
+        self.frame_view.set_overlay_widget(self.recording_selector)
         self.playback_bar = PlaybackBar()
         self.visualization_panel = VisualizationPanel()
         self.visualization_panel.set_dark_field_available(correction is not None)
@@ -47,25 +48,15 @@ class RecordingViewer(QWidget):
         self.playback_bar.speed.currentIndexChanged.connect(self._update_timer_interval)
         self.visualization_panel.changed.connect(self._on_visualization_changed)
 
-    # -- selector -------------------------------------------------------------
-    def _build_selector_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(8)
-        label = QLabel("Recording")
-        label.setObjectName("sectionTitle")
-        row.addWidget(label)
-        row.addWidget(self.recording_selector, 1)
-        return row
-
     def refresh_recordings(self) -> None:
         selected = self.recording_selector.currentData()
         recordings = list_recordings(self._live_dir)
         self.recording_selector.blockSignals(True)
         self.recording_selector.clear()
         for info in recordings:
-            self.recording_selector.addItem(info.label(), info)
+            self.recording_selector.addItem(info.name, info)
         self.recording_selector.blockSignals(False)
+        self.frame_view.update_overlay_geometry()
         if not recordings:
             self._reader = None
             self._info = None
