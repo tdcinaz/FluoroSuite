@@ -5,3 +5,4 @@ captures/
 *.raw
 logs/
 .cache.json
+TODO.md
