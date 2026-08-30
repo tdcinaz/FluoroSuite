@@ -222,7 +222,11 @@ class CapturePage(QWidget):
         grid.addWidget(trial_label, 1, 0)
         grid.addWidget(self.trial_edit, 1, 1)
         layout.addLayout(grid)
-        layout.addWidget(self.phase_toggle)
+
+        options = QVBoxLayout()
+        options.setContentsMargins(0, 0, 0, 0)
+        options.addWidget(self.phase_toggle)
+        layout.addLayout(options)
 
         self.name_preview = QLabel()
         self.name_preview.setObjectName("statusValue")
