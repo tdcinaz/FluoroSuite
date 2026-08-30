@@ -10,10 +10,8 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QComboBox,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -22,6 +20,7 @@ from ..pipeline import Circle
 from ..recordings import RecordingInfo, RecordingReader, list_recordings
 from ..visualization import DarkFieldCorrection, Visualization
 from ..widgets import FrameView
+from ..widgets.recording_selector import RecordingSelector
 
 
 class RecordingPanel(QWidget):
@@ -49,12 +48,11 @@ class RecordingPanel(QWidget):
 
         self.title_label = QLabel(title)
         self.title_label.setObjectName("sectionTitle")
-        self.recording_selector = QComboBox()
-        self.refresh_button = QPushButton("Refresh")
+        self.recording_selector = RecordingSelector()
         self.frame_view = FrameView("Select a recording")
 
         self.recording_selector.currentIndexChanged.connect(self._open_selected)
-        self.refresh_button.clicked.connect(self.refresh_recordings)
+        self.recording_selector.popupAboutToShow.connect(self.refresh_recordings)
         self.frame_view.roiPlaced.connect(self._on_roi_placed)
 
         self._build_layout()
@@ -68,7 +66,6 @@ class RecordingPanel(QWidget):
         header.setSpacing(8)
         header.addWidget(self.title_label)
         header.addWidget(self.recording_selector, 1)
-        header.addWidget(self.refresh_button)
         layout.addLayout(header)
         layout.addWidget(self.frame_view, 1)
 

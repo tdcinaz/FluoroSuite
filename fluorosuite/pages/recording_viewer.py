@@ -6,11 +6,12 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 from ..recordings import RecordingInfo, RecordingReader, list_recordings
 from ..visualization import DarkFieldCorrection, Visualization
 from ..widgets import FrameView, PlaybackBar, VisualizationPanel
+from ..widgets.recording_selector import RecordingSelector
 
 
 class RecordingViewer(QWidget):
@@ -30,8 +31,7 @@ class RecordingViewer(QWidget):
         self._info: RecordingInfo | None = None
         self._current_frame: np.ndarray | None = None
 
-        self.recording_selector = QComboBox()
-        self.refresh_button = QPushButton("Refresh")
+        self.recording_selector = RecordingSelector()
         self.frame_view = FrameView("Select a recording")
         self.playback_bar = PlaybackBar()
         self.visualization_panel = VisualizationPanel()
@@ -41,7 +41,7 @@ class RecordingViewer(QWidget):
         self._play_timer.timeout.connect(self._advance)
 
         self.recording_selector.currentIndexChanged.connect(self._open_selected)
-        self.refresh_button.clicked.connect(self.refresh_recordings)
+        self.recording_selector.popupAboutToShow.connect(self.refresh_recordings)
         self.playback_bar.playToggled.connect(self._on_play_toggled)
         self.playback_bar.indexChanged.connect(self._on_scrub)
         self.playback_bar.speed.currentIndexChanged.connect(self._update_timer_interval)
@@ -56,7 +56,6 @@ class RecordingViewer(QWidget):
         label.setObjectName("sectionTitle")
         row.addWidget(label)
         row.addWidget(self.recording_selector, 1)
-        row.addWidget(self.refresh_button)
         return row
 
     def refresh_recordings(self) -> None:
