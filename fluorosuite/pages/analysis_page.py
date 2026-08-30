@@ -34,7 +34,7 @@ from ..pipeline import (
 from ..theme import TRACE_A, TRACE_B
 from ..recordings import RecordingInfo, RecordingReader
 from ..visualization import DarkFieldCorrection, Visualization, auto_window
-from ..widgets import MetricCard, PlaybackBar, StageDrawer, VisualizationPanel
+from ..widgets import MetricCard, PlaybackBar, ScrollableColumn, StageDrawer, VisualizationPanel
 from .recording_panel import RecordingPanel
 
 
@@ -146,7 +146,7 @@ class AnalysisPage(QWidget):
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._advance)
 
-        pipeline_drawer = self._build_pipeline_drawer()
+        pipeline_drawer = ScrollableColumn(self._build_pipeline_drawer())
         center = self._build_center()
         analysis_panel = self._build_analysis_panel()
 

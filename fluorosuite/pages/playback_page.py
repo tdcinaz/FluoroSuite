@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout, QWidget
 
 from ..recordings import RecordingInfo
 from ..visualization import DarkFieldCorrection
+from ..widgets import ScrollableColumn
 from .recording_viewer import RecordingViewer
 
 
@@ -33,14 +34,15 @@ class PlaybackPage(RecordingViewer):
         side.addStretch(1)
         side_card = QFrame()
         side_card.setObjectName("card")
-        side_card.setFixedWidth(300)
         side_card.setLayout(side)
+        side_column = ScrollableColumn(side_card)
+        side_column.setFixedWidth(300)
 
         body = QHBoxLayout(self)
         body.setContentsMargins(16, 16, 16, 16)
         body.setSpacing(16)
         body.addLayout(center, 1)
-        body.addWidget(side_card)
+        body.addWidget(side_column)
 
     def _on_recording_cleared(self) -> None:
         self.frame_view._placeholder = "No recordings found"

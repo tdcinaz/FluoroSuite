@@ -69,6 +69,12 @@ QCheckBox { color: #cdd8d2; }
 QSplitter::handle:horizontal { background: transparent; border: none; }
 QSplitter::handle:vertical { background: transparent; border: none; }
 
+QScrollBar:vertical { background: transparent; width: 12px; margin: 0 0 0 6px; }
+QScrollBar::handle:vertical { background: #475569; border-radius: 3px; min-height: 28px; }
+QScrollBar::handle:vertical:hover { background: #64748b; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+
 QFrame#card { background: #111827; border: 1px solid #253044; border-radius: 8px; }
 QFrame#stageDrawer { background: #0f172a; border: 1px solid #273449; border-radius: 8px; }
 QFrame#drawer { background: #0f172a; border: 1px solid #253044; border-radius: 8px; }

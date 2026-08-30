@@ -28,7 +28,7 @@ from ..config import (
 )
 from ..streaming import PreviewStreamServer
 from ..visualization import DarkFieldCorrection, Visualization, render_gray
-from ..widgets import FrameView, VisualizationPanel
+from ..widgets import FrameView, ScrollableColumn, VisualizationPanel
 
 CALIBRATION_FRAMES = 64
 
@@ -68,14 +68,15 @@ class CapturePage(QWidget):
         side.addWidget(self._build_recording_card())
         side.addStretch(1)
         side_widget = QWidget()
-        side_widget.setFixedWidth(300)
         side_widget.setLayout(side)
+        side_column = ScrollableColumn(side_widget)
+        side_column.setFixedWidth(300)
 
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(16)
         body.addWidget(self.frame_view, 1)
-        body.addWidget(side_widget)
+        body.addWidget(side_column)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
