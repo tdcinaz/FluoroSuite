@@ -24,9 +24,13 @@ from ..config import (
 )
 
 
-def is_exposure(frame_bytes: bytes) -> bool:
+def exposure_fraction(frame_bytes: bytes) -> float:
     image = np.frombuffer(frame_bytes, dtype="<u2").reshape((ROWS, COLUMNS))
-    return bool(np.mean(image[::8, ::8] >= EXPOSURE_BRIGHT_LEVEL) >= EXPOSURE_FRACTION)
+    return float(np.mean(image[::8, ::8] >= EXPOSURE_BRIGHT_LEVEL))
+
+
+def is_exposure(frame_bytes: bytes) -> bool:
+    return exposure_fraction(frame_bytes) >= EXPOSURE_FRACTION
 
 
 class LatestFrame:

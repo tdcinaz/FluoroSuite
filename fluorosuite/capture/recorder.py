@@ -11,13 +11,20 @@ import json
 import re
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
+from statistics import median
 
-from ..config import COLUMNS, PIXEL_BYTES, ROWS
-from .receiver import is_exposure
+from ..config import COLUMNS, EXPOSURE_FRACTION, PIXEL_BYTES, ROWS
+from .receiver import exposure_fraction
 
 _FILENAME_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
+_OPENING_WINDOW_FRAMES = 16
+_OPENING_MAX_SCORE_RANGE = 0.015
+_OPENING_MAX_SCORE_DRIFT = 0.005
+_TAIL_FRAMES = 4
+_CLOSING_SCORE_DROP = 0.02
 
 
 class Recorder:
@@ -31,6 +38,9 @@ class Recorder:
         self.started: float | None = None
         self.enabled = False
         self.naming = {"prefix": "BDL", "trial": "A0", "phase": "pre"}
+        self._opening_frames: deque[tuple[bytes, float]] = deque(maxlen=_OPENING_WINDOW_FRAMES)
+        self._tail_frames: deque[tuple[bytes, float]] = deque()
+        self._stable_scores: deque[float] = deque(maxlen=32)
 
     @staticmethod
     def _validate_component(value: object, label: str) -> str:
@@ -68,17 +78,40 @@ class Recorder:
         with self.lock:
             if not self.enabled:
                 return
-        exposure = is_exposure(pixels)
+        score = exposure_fraction(pixels)
         with self.lock:
             if not self.enabled:
                 return
-            if not exposure:
+            if score < EXPOSURE_FRACTION:
                 self._stop_locked()
                 return
             if self.file is None:
+                self._opening_frames.append((pixels, score))
+                if not self._opening_is_stable_locked():
+                    return
                 self._start_locked()
-            self.file.write(pixels)
-            self.frames += 1
+                for opening_pixels, opening_score in self._opening_frames:
+                    self._write_frame_locked(opening_pixels, opening_score)
+                self._opening_frames.clear()
+                return
+            self._tail_frames.append((pixels, score))
+            if len(self._tail_frames) > _TAIL_FRAMES:
+                tail_pixels, tail_score = self._tail_frames.popleft()
+                self._write_frame_locked(tail_pixels, tail_score)
+
+    def _opening_is_stable_locked(self) -> bool:
+        if len(self._opening_frames) < _OPENING_WINDOW_FRAMES:
+            return False
+        scores = [item[1] for item in self._opening_frames]
+        half = len(scores) // 2
+        drift = abs(sum(scores[:half]) / half - sum(scores[half:]) / half)
+        return max(scores) - min(scores) <= _OPENING_MAX_SCORE_RANGE and drift <= _OPENING_MAX_SCORE_DRIFT
+
+    def _write_frame_locked(self, pixels: bytes, score: float) -> None:
+        assert self.file is not None
+        self.file.write(pixels)
+        self.frames += 1
+        self._stable_scores.append(score)
 
     def _start_locked(self) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -89,8 +122,15 @@ class Recorder:
         self._write_meta_locked(None)
 
     def _stop_locked(self) -> None:
+        self._opening_frames.clear()
         if self.file is None:
             return
+        minimum_score = median(self._stable_scores) - _CLOSING_SCORE_DROP
+        for pixels, score in self._tail_frames:
+            if score >= minimum_score:
+                self._write_frame_locked(pixels, score)
+        self._tail_frames.clear()
+        self._stable_scores.clear()
         self.file.flush()
         self.file.close()
         self.file = None
