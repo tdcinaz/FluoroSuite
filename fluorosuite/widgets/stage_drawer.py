@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -25,6 +25,7 @@ class StageDrawer(QFrame):
         self.enable_button.setObjectName("stageEnableButton")
         self.enable_button.setCheckable(True)
         self.enable_button.setFixedSize(32, 32)
+        self.enable_button.setIconSize(QSize(20, 20))
         self.enable_button.setToolTip("Enable stage")
 
         self.stage_label = QLabel(title)
@@ -33,9 +34,9 @@ class StageDrawer(QFrame):
 
         self.expand_button = QToolButton()
         self.expand_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        self.expand_button.setArrowType(Qt.ArrowType.RightArrow)
         self.expand_button.setCheckable(True)
         self.expand_button.setFixedSize(32, 32)
+        self.expand_button.setIconSize(QSize(16, 16))
         self.expand_button.setToolTip("Show stage options")
 
         self.header = QWidget()
@@ -67,6 +68,7 @@ class StageDrawer(QFrame):
         layout.addWidget(self.content)
 
         self._set_enabled_icon(False)
+        self._set_expanded_icon(False)
         self.enable_button.toggled.connect(self._set_enabled_icon)
         self.enable_button.toggled.connect(self.enabledChanged.emit)
         self.expand_button.toggled.connect(self._set_expanded)
@@ -108,8 +110,23 @@ class StageDrawer(QFrame):
         self.status_label.setVisible(True)
 
     def _set_expanded(self, expanded: bool) -> None:
-        self.expand_button.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self._set_expanded_icon(expanded)
         self.content.setVisible(expanded)
+
+    def _set_expanded_icon(self, expanded: bool) -> None:
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#dbe7f3"), 2.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        if expanded:
+            painter.drawLine(QPointF(3.5, 5), QPointF(8, 9.5))
+            painter.drawLine(QPointF(8, 9.5), QPointF(12.5, 5))
+        else:
+            painter.drawLine(QPointF(5, 3.5), QPointF(9.5, 8))
+            painter.drawLine(QPointF(9.5, 8), QPointF(5, 12.5))
+        painter.end()
+        self.expand_button.setIcon(QIcon(pixmap))
 
     def _set_enabled_icon(self, enabled: bool) -> None:
         color = QColor("#14b8a6" if enabled else "#64748b")
