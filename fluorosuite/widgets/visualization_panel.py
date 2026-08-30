@@ -61,13 +61,18 @@ class VisualizationPanel(QWidget):
         buttons.addWidget(self.auto_button)
         buttons.addWidget(self.reset_button)
 
+        options = QVBoxLayout()
+        options.setContentsMargins(0, 0, 0, 0)
+        options.setSpacing(10)
+        options.addWidget(self.invert)
+        options.addWidget(self.dark_field)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
         layout.addWidget(title)
         layout.addLayout(grid)
-        layout.addWidget(self.invert)
-        layout.addWidget(self.dark_field)
+        layout.addLayout(options)
         layout.addLayout(buttons)
 
         for slider in (self.level, self.width, self.brightness, self.contrast):
