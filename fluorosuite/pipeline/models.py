@@ -43,6 +43,7 @@ class ROIResidenceResult:
     roi_mean: np.ndarray
     contrast: np.ndarray
     baseline: float
+    baseline_start_time: float
     peak_contrast: float
     time_to_peak: float
     onset_time: float

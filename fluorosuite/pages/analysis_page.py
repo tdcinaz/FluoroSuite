@@ -254,7 +254,7 @@ class AnalysisPage(QWidget):
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(6)
         self._add_param(grid, 0, "ROI radius (px)", self.radius_spin)
-        self._add_param(grid, 1, "Baseline frames", self.baseline_spin)
+        self._add_param(grid, 1, "Baseline window (frames)", self.baseline_spin)
         self._add_param(grid, 2, "Clearance fraction", self.clearance_spin)
         self._add_param(grid, 3, "Smoothing window", self.smoothing_spin)
         stage.content_layout.addLayout(grid)
@@ -574,7 +574,14 @@ class AnalysisPage(QWidget):
             else f"onset {a.onset_time:.2f}s \u2192 clear {a.clearance_time:.2f}s"
         )
         self.residence_card.set_value(f"{a.residence_time:.2f} s", residence_detail)
-        self.baseline_card.set_value(f"{a.baseline:.0f}", detail(f"{b.baseline:.0f}" if b else ""))
+        baseline_detail = (
+            f"B {b.baseline:.0f} from {b.baseline_start_time:.2f} s"
+            if self._compare and b is not None
+            else "B --"
+            if self._compare
+            else f"from {a.baseline_start_time:.2f} s"
+        )
+        self.baseline_card.set_value(f"{a.baseline:.0f}", baseline_detail)
 
     def _clear_results(self) -> None:
         self._curve_a.setData([], [])

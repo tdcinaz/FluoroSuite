@@ -38,6 +38,45 @@ def _smooth(values: np.ndarray, window: int) -> np.ndarray:
     return np.convolve(values, kernel, mode="same")
 
 
+def _stable_baseline_start(
+    roi_mean: np.ndarray,
+    baseline_frames: int,
+    fps: float,
+) -> int:
+    count = int(roi_mean.size)
+    if count <= baseline_frames:
+        return 0
+
+    stability_frames = min(count, max(baseline_frames, round(2.0 * fps)))
+    search_frames = min(count, max(stability_frames, round(10.0 * fps)))
+    search_values = roi_mean[:search_frames].astype(np.float64, copy=False)
+    differences = np.diff(search_values)
+    if differences.size:
+        difference_median = float(np.median(differences))
+        noise = float(np.median(np.abs(differences - difference_median))) * 1.4826 / np.sqrt(2.0)
+    else:
+        noise = 0.0
+
+    block_count = min(4, stability_frames)
+    block_frames = max(1, stability_frames // block_count)
+    tolerance = max(0.25, min(1.0, 4.0 * noise / np.sqrt(block_frames)))
+    best_start = 0
+    best_range = float("inf")
+    final_start = search_frames - stability_frames
+    for start in range(final_start + 1):
+        window = search_values[start : start + stability_frames]
+        block_means = np.asarray([float(np.mean(block)) for block in np.array_split(window, block_count)])
+        block_range = float(np.ptp(block_means))
+        if block_range < best_range:
+            best_start = start
+            best_range = block_range
+        if block_range <= tolerance:
+            best_start = start
+            break
+
+    return min(count - baseline_frames, best_start + stability_frames - baseline_frames)
+
+
 def analyze_roi_residence(
     frames: np.ndarray,
     circle: Circle,
@@ -99,7 +138,8 @@ def _analyze_roi_means(
     time = np.arange(count, dtype=np.float32) / fps
 
     baseline_frames = max(1, min(parameters.baseline_frames, count))
-    baseline = float(np.mean(roi_mean[:baseline_frames]))
+    baseline_start = _stable_baseline_start(roi_mean, baseline_frames, fps)
+    baseline = float(np.mean(roi_mean[baseline_start : baseline_start + baseline_frames]))
 
     contrast = baseline - roi_mean
     contrast = _smooth(contrast, parameters.smoothing_window)
@@ -124,6 +164,7 @@ def _analyze_roi_means(
         roi_mean=roi_mean,
         contrast=contrast,
         baseline=baseline,
+        baseline_start_time=baseline_start / fps,
         peak_contrast=peak_contrast,
         time_to_peak=time_to_peak,
         onset_time=onset_time,
