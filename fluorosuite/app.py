@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget
 
 from .capture import LatestFrame, PreviewStore, Recorder, StreamReceiver
 from .config import DARK_FIELD_FILE, LIVE_DIR, STREAM_HOST, STREAM_PORT
-from .pages import AnalysisPage, CapturePage, PlaybackPage
+from .pages import AnalysisPage, CapturePage, PlaybackPage, PlottingPage
 from .theme import STYLESHEET
 from .visualization import DarkFieldCorrection
 
@@ -32,12 +32,14 @@ class MainWindow(QMainWindow):
         self.capture_page = CapturePage(self._latest, self._store, self._recorder, self._correction)
         self.playback_page = PlaybackPage(LIVE_DIR, self._correction)
         self.analysis_page = AnalysisPage(LIVE_DIR, self._correction)
+        self.plotting_page = PlottingPage(LIVE_DIR)
         self.capture_page.calibrated.connect(self._on_calibrated)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.capture_page, "Capture")
         self.tabs.addTab(self.playback_page, "Playback")
         self.tabs.addTab(self.analysis_page, "Analysis")
+        self.tabs.addTab(self.plotting_page, "Plotting")
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.setCentralWidget(self.tabs)
 
@@ -59,6 +61,8 @@ class MainWindow(QMainWindow):
             self.playback_page.refresh_recordings()
         elif widget is self.analysis_page:
             self.analysis_page.refresh_recordings()
+        elif widget is self.plotting_page:
+            self.plotting_page.refresh_recordings()
 
     def closeEvent(self, event) -> None:  # noqa: ANN001
         self._recorder.set_enabled(False)

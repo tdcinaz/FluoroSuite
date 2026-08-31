@@ -50,6 +50,7 @@ QToolButton:hover { background: #263449; }
 QLabel#panelTitle { font-size: 16px; font-weight: 700; color: #f8fafc; }
 QLabel#sectionTitle { color: #8fb3a6; font-size: 12px; font-weight: 700; letter-spacing: 1px; }
 QLabel#subtleLabel { color: #9fb0c6; }
+QLabel#errorLabel { color: #f87171; }
 QLabel#statusValue { color: #67e8f9; }
 QLabel#recBadge { color: #f87171; font-weight: 700; }
 
