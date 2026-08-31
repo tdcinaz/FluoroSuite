@@ -122,14 +122,15 @@ class RecordingPanel(QWidget):
     # -- selection ------------------------------------------------------------
     def refresh_recordings(self) -> None:
         selected = self.recording_selector.currentData()
+        previous_path = self._info.path if self._info is not None else None
         recordings = list_recordings(self._live_dir)
         self.recording_selector.blockSignals(True)
         self.recording_selector.clear()
         for info in recordings:
             self.recording_selector.addItem(info.name, info)
-        self.recording_selector.blockSignals(False)
         self.frame_view.update_overlay_geometry()
         if not recordings:
+            self.recording_selector.blockSignals(False)
             self._reader = None
             self._info = None
             self._current_frame = None
@@ -143,7 +144,10 @@ class RecordingPanel(QWidget):
                     index = candidate
                     break
         self.recording_selector.setCurrentIndex(index)
-        self._open_selected()
+        self.recording_selector.blockSignals(False)
+        info = self.recording_selector.currentData()
+        if info is not None and (self._reader is None or info.path != previous_path):
+            self._open_selected()
 
     def _open_selected(self) -> None:
         info = self.recording_selector.currentData()

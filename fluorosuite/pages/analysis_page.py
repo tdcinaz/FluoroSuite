@@ -39,8 +39,8 @@ from .recording_panel import RecordingPanel
 
 
 class _AnalysisSignals(QObject):
-    finished = Signal(int, object, object)
-    failed = Signal(int, object)
+    finished = Signal(int, int, object)
+    failed = Signal(int, int, object)
     progress = Signal(int, int, float)
 
 
@@ -48,44 +48,33 @@ class _AnalysisTask(QRunnable):
     def __init__(
         self,
         generation: int,
-        panels: tuple[RecordingPanel, ...],
+        panel_index: int,
+        panel: RecordingPanel,
         parameters: ROIParameters,
     ) -> None:
         super().__init__()
         self.generation = generation
-        self.inputs = tuple(self._snapshot_panel(panel) for panel in panels)
+        self.panel_index = panel_index
+        self.inputs = self._snapshot_panel(panel)
         self.parameters = parameters
         self.signals = _AnalysisSignals()
         self.cancelled = False
 
     def run(self) -> None:
         if self.cancelled:
-            self.signals.finished.emit(self.generation, None, None)
+            self.signals.finished.emit(self.generation, self.panel_index, None)
             return
         try:
-            result_a = self._analyze_panel(
-                self.inputs[0],
+            result = self._analyze_panel(
+                self.inputs,
                 self.parameters,
-                lambda value: self.signals.progress.emit(self.generation, 0, value),
+                lambda value: self.signals.progress.emit(self.generation, self.panel_index, value),
                 lambda: not self.cancelled,
             )
-            if self.cancelled:
-                self.signals.finished.emit(self.generation, None, None)
-                return
-            result_b = (
-                self._analyze_panel(
-                    self.inputs[1],
-                    self.parameters,
-                    lambda value: self.signals.progress.emit(self.generation, 1, value),
-                    lambda: not self.cancelled,
-                )
-                if len(self.inputs) == 2
-                else None
-            )
         except Exception as error:  # pragma: no cover - defensive worker boundary
-            self.signals.failed.emit(self.generation, error)
+            self.signals.failed.emit(self.generation, self.panel_index, error)
             return
-        self.signals.finished.emit(self.generation, result_a, result_b)
+        self.signals.finished.emit(self.generation, self.panel_index, result)
 
     @staticmethod
     def _snapshot_panel(
@@ -132,10 +121,11 @@ class AnalysisPage(QWidget):
     ) -> None:
         super().__init__(parent)
         self._compare = False
-        self._analysis_generation = 0
+        self._analysis_generations = [0, 0]
         self._analysis_tasks: set[_AnalysisTask] = set()
+        self._published_results: dict[int, ROIResidenceResult | None] = {}
         self._analysis_pool = QThreadPool(self)
-        self._analysis_pool.setMaxThreadCount(1)
+        self._analysis_pool.setMaxThreadCount(2)
 
         self.panel_a = RecordingPanel(live_dir, correction)
         self.panel_a.set_roi_color(TRACE_A)
@@ -167,8 +157,10 @@ class AnalysisPage(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.addWidget(main_splitter)
 
-        for panel in (self.panel_a, self.panel_b):
-            panel.roiPlaced.connect(self._on_roi_placed)
+        for panel_index, panel in enumerate((self.panel_a, self.panel_b)):
+            panel.roiPlaced.connect(
+                lambda roi, index=panel_index: self._on_roi_placed(index, roi)
+            )
             panel.recordingCleared.connect(lambda p=panel: self._on_panel_cleared(p))
         self.panel_a.recordingOpened.connect(self._on_panel_a_opened)
         self.panel_b.recordingOpened.connect(self._on_panel_b_opened)
@@ -334,7 +326,16 @@ class AnalysisPage(QWidget):
         self._compare = compare
         self._apply_mode()
         self._sync_playback()
-        self._run_analysis()
+        self._apply_analysis_results(
+            self._published_results.get(0),
+            self._published_results.get(1),
+        )
+        if (
+            compare
+            and 1 not in self._published_results
+            and not any(task.panel_index == 1 and not task.cancelled for task in self._analysis_tasks)
+        ):
+            self._run_analysis((1,))
 
     def _apply_mode(self) -> None:
         self.panel_b.setVisible(self._compare)
@@ -417,11 +418,13 @@ class AnalysisPage(QWidget):
         self.panel_a.refresh_recordings()
         self.panel_b.refresh_recordings()
         self._sync_playback(reset=True)
-        self._run_analysis()
 
     # -- handlers -------------------------------------------------------------
     def _on_stage_enabled(self, enabled: bool) -> None:
-        self._analysis_generation += 1
+        for task in self._analysis_tasks:
+            task.cancelled = True
+        self._analysis_generations[0] += 1
+        self._analysis_generations[1] += 1
         if not enabled:
             self._set_analysis_running(False)
         for panel in (self.panel_a, self.panel_b):
@@ -436,8 +439,8 @@ class AnalysisPage(QWidget):
             panel.set_roi_radius(radius)
         self._run_analysis()
 
-    def _on_roi_placed(self, roi: Circle) -> None:  # noqa: ARG002
-        self._run_analysis()
+    def _on_roi_placed(self, panel_index: int, roi: Circle) -> None:  # noqa: ARG002
+        self._run_analysis((panel_index,))
 
     def _on_visualization_changed(self, visualization: Visualization) -> None:
         for panel in (self.panel_a, self.panel_b):
@@ -450,68 +453,96 @@ class AnalysisPage(QWidget):
 
     def _on_panel_a_opened(self, info: RecordingInfo) -> None:
         self._pause()
+        self._published_results.pop(0, None)
         self._legend.getLabel(self._curve_a).setText(info.name)
         frame = self.panel_a.current_frame
         if frame is not None:
             level, width = auto_window(frame)
             self.visualization_panel.apply_window(level, width)
         self._sync_playback(reset=True)
-        self._run_analysis()
+        self._run_analysis((0,))
 
     def _on_panel_b_opened(self, info: RecordingInfo) -> None:
         self._pause()
+        self._published_results.pop(1, None)
         self._legend.getLabel(self._curve_b).setText(info.name)
         self._sync_playback(reset=True)
-        self._run_analysis()
+        self._run_analysis((1,))
 
     def _on_panel_cleared(self, panel: RecordingPanel) -> None:
-        self._analysis_generation += 1
+        panel_index = 0 if panel is self.panel_a else 1
+        self._analysis_generations[panel_index] += 1
+        for task in self._analysis_tasks:
+            if task.panel_index == panel_index:
+                task.cancelled = True
+        self._published_results.pop(panel_index, None)
         panel.frame_view._placeholder = "No recordings found"
         panel.frame_view.update()
         self._sync_playback(reset=True)
         self._clear_results()
 
-    def _run_analysis(self) -> None:
+    def _run_analysis(self, panel_indices: tuple[int, ...] | None = None) -> None:
         if not self.stage.is_enabled():
             return
-        self._analysis_generation += 1
-        generation = self._analysis_generation
-        panels = self._playback_panels()
-        if not panels:
+        all_panels = (self.panel_a, self.panel_b)
+        active_indices = (0, 1) if self._compare else (0,)
+        available_indices = tuple(index for index in active_indices if all_panels[index].has_recording())
+        if not available_indices:
             self._set_analysis_running(False)
             self._clear_results()
             return
-        task = _AnalysisTask(generation, panels, self._parameters())
-        for previous in self._analysis_tasks:
-            previous.cancelled = True
+        indices = available_indices if panel_indices is None else panel_indices
+        indexed_panels = tuple((index, all_panels[index]) for index in indices if index in available_indices)
+        if not indexed_panels:
+            return
         self._set_analysis_running(True)
-        for panel in panels:
+        parameters = self._parameters()
+        for panel_index, panel in indexed_panels:
+            self._analysis_generations[panel_index] += 1
+            generation = self._analysis_generations[panel_index]
+            for previous in self._analysis_tasks:
+                if previous.panel_index == panel_index:
+                    previous.cancelled = True
             if panel.roi is not None:
                 panel.frame_view.set_roi_processing(True)
-        task.signals.finished.connect(self._apply_analysis_results)
-        task.signals.progress.connect(self._on_analysis_progress)
-        task.signals.failed.connect(self._analysis_failed)
-        self._analysis_tasks.add(task)
-        self._analysis_pool.start(task)
+            task = _AnalysisTask(generation, panel_index, panel, parameters)
+            task.signals.finished.connect(self._on_analysis_completed)
+            task.signals.progress.connect(self._on_analysis_progress)
+            task.signals.failed.connect(self._analysis_failed)
+            self._analysis_tasks.add(task)
+            self._analysis_pool.start(task)
 
-    def _apply_analysis_results(
+    def _on_analysis_completed(
         self,
         generation: int,
-        result_a: ROIResidenceResult | None,
-        result_b: ROIResidenceResult | None,
+        panel_index: int,
+        result: ROIResidenceResult | None,
     ) -> None:
         task = next(
-            (candidate for candidate in self._analysis_tasks if candidate.generation == generation),
+            (
+                candidate
+                for candidate in self._analysis_tasks
+                if candidate.generation == generation and candidate.panel_index == panel_index
+            ),
             None,
         )
         if task is not None:
             self._analysis_tasks.remove(task)
-        if generation != self._analysis_generation:
+        if generation != self._analysis_generations[panel_index]:
             return
-        self._set_analysis_running(False)
-        for panel in (self.panel_a, self.panel_b):
-            panel.frame_view.set_roi_processing(False)
+        self._published_results[panel_index] = result
+        (self.panel_a, self.panel_b)[panel_index].frame_view.set_roi_processing(False)
+        self._set_analysis_running(any(not candidate.cancelled for candidate in self._analysis_tasks))
+        self._apply_analysis_results(
+            self._published_results.get(0),
+            self._published_results.get(1),
+        )
 
+    def _apply_analysis_results(
+        self,
+        result_a: ROIResidenceResult | None,
+        result_b: ROIResidenceResult | None,
+    ) -> None:
         if result_a is not None:
             self._curve_a.setData(result_a.time, result_a.contrast)
         else:
@@ -523,25 +554,26 @@ class AnalysisPage(QWidget):
 
         self._update_cards(result_a, result_b)
 
-    def _analysis_failed(self, generation: int, error: object) -> None:
+    def _analysis_failed(self, generation: int, panel_index: int, error: object) -> None:
         task = next(
-            (candidate for candidate in self._analysis_tasks if candidate.generation == generation),
+            (
+                candidate
+                for candidate in self._analysis_tasks
+                if candidate.generation == generation and candidate.panel_index == panel_index
+            ),
             None,
         )
         if task is not None:
             self._analysis_tasks.remove(task)
-        if generation == self._analysis_generation:
-            self._set_analysis_running(False)
-            for panel in (self.panel_a, self.panel_b):
-                panel.frame_view.set_roi_processing(False)
+        if generation == self._analysis_generations[panel_index]:
+            (self.panel_a, self.panel_b)[panel_index].frame_view.set_roi_processing(False)
+            self._set_analysis_running(any(not candidate.cancelled for candidate in self._analysis_tasks))
             self.stage.set_status(f"Analysis failed: {error}")
 
     def _on_analysis_progress(self, generation: int, panel_index: int, progress: float) -> None:
-        if generation != self._analysis_generation:
+        if generation != self._analysis_generations[panel_index]:
             return
-        panels = self._playback_panels()
-        if panel_index < len(panels):
-            panels[panel_index].frame_view.set_roi_processing(True, progress)
+        (self.panel_a, self.panel_b)[panel_index].frame_view.set_roi_processing(True, progress)
 
     def _set_analysis_running(self, running: bool) -> None:
         self.run_button.setProperty("analysisRunning", running)
@@ -555,7 +587,13 @@ class AnalysisPage(QWidget):
         b: ROIResidenceResult | None,
     ) -> None:
         if a is None:
-            self._clear_results()
+            if b is None:
+                self._clear_results()
+                return
+            self.peak_card.set_value("--", f"B {b.peak_contrast:.1f}")
+            self.time_to_peak_card.set_value("--", f"B {b.time_to_peak:.2f} s")
+            self.residence_card.set_value("--", f"B {b.residence_time:.2f} s")
+            self.baseline_card.set_value("--", f"B {b.baseline:.0f} from {b.baseline_start_time:.2f} s")
             return
 
         def detail(value: str) -> str:
