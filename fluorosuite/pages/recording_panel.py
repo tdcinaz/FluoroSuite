@@ -12,7 +12,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from ..pipeline import Circle
-from ..recordings import RecordingInfo, RecordingReader, list_recordings
+from ..recordings import RecordingInfo, RecordingReader, list_recordings, load_saved_roi, save_roi
 from ..visualization import DarkFieldCorrection, Visualization
 from ..widgets import FrameView
 from ..widgets.recording_selector import RecordingSelector
@@ -155,6 +155,8 @@ class RecordingPanel(QWidget):
             return
         self._info = info
         self._reader = RecordingReader(info.path)
+        self._roi = load_saved_roi(info.path)
+        self.frame_view.set_roi(self._roi)
         self.show_frame(0)
         self.recordingOpened.emit(info)
 
@@ -169,4 +171,6 @@ class RecordingPanel(QWidget):
 
     def _on_roi_placed(self, roi: Circle) -> None:
         self._roi = roi
+        if self._info is not None:
+            save_roi(self._info.path, roi)
         self.roiPlaced.emit(roi)

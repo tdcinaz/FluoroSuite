@@ -13,6 +13,82 @@ from pathlib import Path
 import numpy as np
 
 from .config import COLUMNS, PIXEL_BYTES, ROWS
+from .pipeline.models import Circle, TimingAlignmentResult
+
+
+def _read_sidecar(path: Path) -> dict:
+    sidecar = Path(path).with_suffix(".json")
+    try:
+        metadata = json.loads(sidecar.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _write_analysis_value(path: Path, key: str, value: dict) -> None:
+    sidecar = Path(path).with_suffix(".json")
+    metadata = _read_sidecar(path)
+    analysis = metadata.get("analysis")
+    if not isinstance(analysis, dict):
+        analysis = {}
+        metadata["analysis"] = analysis
+    analysis[key] = value
+    temporary = sidecar.with_name(sidecar.name + ".tmp")
+    temporary.write_text(json.dumps(metadata, indent=2))
+    temporary.replace(sidecar)
+
+
+def _read_analysis_value(path: Path, key: str) -> object:
+    analysis = _read_sidecar(path).get("analysis")
+    return analysis.get(key) if isinstance(analysis, dict) else None
+
+
+def load_saved_roi(path: Path) -> Circle | None:
+    value = _read_analysis_value(path, "roi")
+    if not isinstance(value, dict):
+        return None
+    try:
+        return Circle(
+            center_x=int(value["center_x"]),
+            center_y=int(value["center_y"]),
+            radius=max(1, int(value["radius"])),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def save_roi(path: Path, roi: Circle) -> None:
+    _write_analysis_value(
+        path,
+        "roi",
+        {"center_x": roi.center_x, "center_y": roi.center_y, "radius": roi.radius},
+    )
+
+
+def load_saved_timing_alignment(path: Path) -> TimingAlignmentResult | None:
+    value = _read_analysis_value(path, "timing_alignment")
+    if not isinstance(value, dict):
+        return None
+    try:
+        return TimingAlignmentResult(
+            injection_frame=max(0, int(value["injection_frame"])),
+            start_frame=max(0, int(value["start_frame"])),
+            fps=max(1.0, float(value["fps"])),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def save_timing_alignment(path: Path, result: TimingAlignmentResult) -> None:
+    _write_analysis_value(
+        path,
+        "timing_alignment",
+        {
+            "injection_frame": result.injection_frame,
+            "start_frame": result.start_frame,
+            "fps": result.fps,
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,13 +130,7 @@ def list_recordings(directory: Path) -> list[RecordingInfo]:
             size = raw.stat().st_size
         except OSError:
             continue
-        meta = {}
-        sidecar = raw.with_suffix(".json")
-        if sidecar.exists():
-            try:
-                meta = json.loads(sidecar.read_text())
-            except (OSError, json.JSONDecodeError):
-                meta = {}
+        meta = _read_sidecar(raw)
         items.append(
             RecordingInfo(
                 path=raw,

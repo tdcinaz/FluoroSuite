@@ -1,0 +1,46 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from fluorosuite.pipeline import Circle, TimingAlignmentResult
+from fluorosuite.recordings import (
+    load_saved_roi,
+    load_saved_timing_alignment,
+    save_roi,
+    save_timing_alignment,
+)
+
+
+class RecordingAnalysisMetadataTests(unittest.TestCase):
+    def test_saves_analysis_data_without_replacing_recording_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            raw_path = Path(temporary_directory) / "recording.raw"
+            sidecar = raw_path.with_suffix(".json")
+            sidecar.write_text(json.dumps({"frames": 120, "started": 10.0}))
+
+            save_roi(raw_path, Circle(100, 200, 30))
+            save_timing_alignment(raw_path, TimingAlignmentResult(90, 40, 10.0))
+
+            metadata = json.loads(sidecar.read_text())
+            self.assertEqual(metadata["frames"], 120)
+            self.assertEqual(load_saved_roi(raw_path), Circle(100, 200, 30))
+            self.assertEqual(
+                load_saved_timing_alignment(raw_path),
+                TimingAlignmentResult(90, 40, 10.0),
+            )
+
+    def test_saving_roi_overwrites_previous_position_and_radius(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            raw_path = Path(temporary_directory) / "recording.raw"
+
+            save_roi(raw_path, Circle(10, 20, 30))
+            save_roi(raw_path, Circle(40, 50, 60))
+
+            self.assertEqual(load_saved_roi(raw_path), Circle(40, 50, 60))
+
+
+if __name__ == "__main__":
+    unittest.main()

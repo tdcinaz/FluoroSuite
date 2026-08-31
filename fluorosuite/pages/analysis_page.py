@@ -34,7 +34,12 @@ from ..pipeline import (
     detect_injection_timing,
 )
 from ..theme import TRACE_A, TRACE_B
-from ..recordings import RecordingInfo, RecordingReader
+from ..recordings import (
+    RecordingInfo,
+    RecordingReader,
+    load_saved_timing_alignment,
+    save_timing_alignment,
+)
 from ..visualization import DarkFieldCorrection, Visualization, auto_window
 from ..widgets import MetricCard, PlaybackBar, ScrollableColumn, StageDrawer, VisualizationPanel
 from .recording_panel import RecordingPanel
@@ -525,6 +530,9 @@ class AnalysisPage(QWidget):
         self._pause()
         self._published_results.pop(0, None)
         self._invalidate_timing(0)
+        self._restore_timing(0, info)
+        if self.panel_a.roi is not None:
+            self.stage.enable_button.setChecked(True)
         self._legend.getLabel(self._curve_a).setText(info.name)
         frame = self.panel_a.current_frame
         if frame is not None:
@@ -538,6 +546,9 @@ class AnalysisPage(QWidget):
         self._pause()
         self._published_results.pop(1, None)
         self._invalidate_timing(1)
+        self._restore_timing(1, info)
+        if self.panel_b.roi is not None:
+            self.stage.enable_button.setChecked(True)
         self._legend.getLabel(self._curve_b).setText(info.name)
         self._sync_playback(reset=True)
         self._run_timing_alignment((1,))
@@ -562,6 +573,12 @@ class AnalysisPage(QWidget):
         for task in self._timing_tasks:
             if task.panel_index == panel_index:
                 task.cancelled = True
+
+    def _restore_timing(self, panel_index: int, info: RecordingInfo) -> None:
+        result = load_saved_timing_alignment(info.path)
+        if result is not None:
+            self._timing_results[panel_index] = result
+            self.timing_stage.enable_button.setChecked(True)
 
     def _run_timing_alignment(self, panel_indices: tuple[int, ...] | None = None) -> None:
         if not self.timing_stage.is_enabled():
@@ -609,6 +626,9 @@ class AnalysisPage(QWidget):
         if generation != self._timing_generations[panel_index] or result is None:
             return
         self._timing_results[panel_index] = result
+        panel = (self.panel_a, self.panel_b)[panel_index]
+        if panel.info is not None:
+            save_timing_alignment(panel.info.path, result)
         if self.timing_stage.is_enabled() and not any(
             not candidate.cancelled for candidate in self._timing_tasks
         ):
