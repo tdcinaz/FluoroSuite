@@ -5,16 +5,24 @@ single pipeline. For now the only registered stage places and analyzes an
 aneurysm ROI circle, but the registry keeps the app open to further stages.
 """
 
-from .models import Circle, ROIParameters, ROIResidenceResult, StageInstance
-from .stages import STAGE_REGISTRY, StageDefinition, analyze_roi_residence, analyze_roi_residence_stream
+from .models import Circle, ROIParameters, ROIResidenceResult, StageInstance, TimingAlignmentResult
+from .stages import (
+    STAGE_REGISTRY,
+    StageDefinition,
+    analyze_roi_residence,
+    analyze_roi_residence_stream,
+    detect_injection_timing,
+)
 
 __all__ = [
     "Circle",
     "ROIParameters",
     "ROIResidenceResult",
     "StageInstance",
+    "TimingAlignmentResult",
     "STAGE_REGISTRY",
     "StageDefinition",
     "analyze_roi_residence",
     "analyze_roi_residence_stream",
+    "detect_injection_timing",
 ]

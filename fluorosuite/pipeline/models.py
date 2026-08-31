@@ -49,3 +49,10 @@ class ROIResidenceResult:
     onset_time: float
     clearance_time: float
     residence_time: float
+
+
+@dataclass(frozen=True, slots=True)
+class TimingAlignmentResult:
+    injection_frame: int
+    start_frame: int
+    fps: float

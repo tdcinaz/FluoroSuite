@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable
 
 import numpy as np
 
-from .models import Circle, ROIParameters, ROIResidenceResult
+from .models import Circle, ROIParameters, ROIResidenceResult, TimingAlignmentResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,12 +23,60 @@ class StageDefinition:
 
 
 STAGE_REGISTRY: dict[str, StageDefinition] = {
+    "timing_alignment": StageDefinition(
+        key="timing_alignment",
+        display_name="Injection timing alignment",
+        description="Detect contrast injection and align it to 5 seconds without modifying the recording.",
+    ),
     "roi_analysis": StageDefinition(
         key="roi_analysis",
         display_name="Aneurysm ROI analysis",
         description="Place a circular ROI on the aneurysm and measure contrast residence over time.",
     ),
 }
+
+
+def detect_injection_timing(
+    frames: Iterable[np.ndarray],
+    fps: float,
+    should_continue: Callable[[], bool] | None = None,
+) -> TimingAlignmentResult:
+    """Detect contrast arrival from raw whole-frame intensity and compute a virtual trim."""
+    fps = max(1.0, float(fps))
+    frame_means: list[float] = []
+    for frame in frames:
+        if should_continue is not None and not should_continue():
+            break
+        frame_means.append(float(np.mean(frame[::8, ::8], dtype=np.float64)))
+
+    values = np.asarray(frame_means, dtype=np.float64)
+    if values.size < 2:
+        return TimingAlignmentResult(0, 0, fps)
+
+    window = max(1, round(fps))
+    if values.size < 2 * window + 1:
+        return TimingAlignmentResult(0, 0, fps)
+    moving_average = np.convolve(values, np.ones(window, dtype=np.float64) / window, mode="valid")
+    sustained_change = moving_average[window:] - moving_average[:-window]
+    search_start = min(sustained_change.size, round(2.0 * fps))
+    search_stop = min(sustained_change.size, round(20.0 * fps))
+    search_values = sustained_change[search_start:search_stop]
+    if search_values.size == 0:
+        search_values = sustained_change
+        search_start = 0
+
+    center = float(np.median(search_values))
+    noise = float(np.median(np.abs(search_values - center))) * 1.4826
+    strongest_index = int(np.argmin(search_values))
+    strongest_drop = max(0.0, center - float(search_values[strongest_index]))
+    if strongest_drop <= 6.0 * noise or strongest_drop <= np.finfo(np.float64).eps:
+        injection_frame = 0
+    else:
+        injection_frame = search_start + strongest_index + window
+
+    aligned_lead_frames = round(5.0 * fps)
+    start_frame = max(0, injection_frame - aligned_lead_frames)
+    return TimingAlignmentResult(injection_frame, start_frame, fps)
 
 
 def _smooth(values: np.ndarray, window: int) -> np.ndarray:

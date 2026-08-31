@@ -29,7 +29,9 @@ from ..pipeline import (
     Circle,
     ROIParameters,
     ROIResidenceResult,
+    TimingAlignmentResult,
     analyze_roi_residence_stream,
+    detect_injection_timing,
 )
 from ..theme import TRACE_A, TRACE_B
 from ..recordings import RecordingInfo, RecordingReader
@@ -112,6 +114,41 @@ class _AnalysisTask(QRunnable):
         return result
 
 
+class _TimingSignals(QObject):
+    finished = Signal(int, int, object)
+    failed = Signal(int, int, object)
+
+
+class _TimingTask(QRunnable):
+    def __init__(self, generation: int, panel_index: int, panel: RecordingPanel) -> None:
+        super().__init__()
+        self.generation = generation
+        self.panel_index = panel_index
+        self.reader = panel._reader
+        self.fps = panel.info.fps if panel.info is not None else 15.0
+        self.signals = _TimingSignals()
+        self.cancelled = False
+
+    def run(self) -> None:
+        if self.cancelled or self.reader is None:
+            self.signals.finished.emit(self.generation, self.panel_index, None)
+            return
+        try:
+            result = detect_injection_timing(
+                self.reader.iter_frames(),
+                self.fps,
+                lambda: not self.cancelled,
+            )
+        except Exception as error:  # pragma: no cover - defensive worker boundary
+            self.signals.failed.emit(self.generation, self.panel_index, error)
+            return
+        self.signals.finished.emit(
+            self.generation,
+            self.panel_index,
+            result if not self.cancelled else None,
+        )
+
+
 class AnalysisPage(QWidget):
     def __init__(
         self,
@@ -124,8 +161,11 @@ class AnalysisPage(QWidget):
         self._analysis_generations = [0, 0]
         self._analysis_tasks: set[_AnalysisTask] = set()
         self._published_results: dict[int, ROIResidenceResult | None] = {}
+        self._timing_generations = [0, 0]
+        self._timing_tasks: set[_TimingTask] = set()
+        self._timing_results: dict[int, TimingAlignmentResult] = {}
         self._analysis_pool = QThreadPool(self)
-        self._analysis_pool.setMaxThreadCount(2)
+        self._analysis_pool.setMaxThreadCount(4)
 
         self.panel_a = RecordingPanel(live_dir, correction)
         self.panel_a.set_roi_color(TRACE_A)
@@ -185,6 +225,16 @@ class AnalysisPage(QWidget):
         layout.addWidget(title)
 
         layout.addLayout(self._build_mode_toggle())
+
+        timing_definition = STAGE_REGISTRY["timing_alignment"]
+        self.timing_stage = StageDrawer(timing_definition.display_name)
+        self.timing_stage.enabledChanged.connect(self._on_timing_stage_enabled)
+        timing_hint = QLabel(timing_definition.description)
+        timing_hint.setObjectName("subtleLabel")
+        timing_hint.setWordWrap(True)
+        self.timing_stage.content_layout.addWidget(timing_hint)
+        self.timing_stage.set_expanded(True)
+        layout.addWidget(self.timing_stage)
 
         definition = STAGE_REGISTRY["roi_analysis"]
         self.stage = StageDrawer(definition.display_name)
@@ -253,7 +303,7 @@ class AnalysisPage(QWidget):
 
         self.radius_spin.valueChanged.connect(self._on_radius_changed)
         for widget in (self.baseline_spin, self.clearance_spin, self.smoothing_spin):
-            widget.valueChanged.connect(self._run_analysis)
+            widget.valueChanged.connect(lambda _value: self._run_analysis())
 
         stage.set_expanded(True)
 
@@ -293,7 +343,7 @@ class AnalysisPage(QWidget):
         self.run_button = QPushButton("Run analysis")
         self.run_button.setObjectName("primaryButton")
         self.run_button.setProperty("analysisRunning", False)
-        self.run_button.clicked.connect(self._run_analysis)
+        self.run_button.clicked.connect(lambda _checked=False: self._run_analysis())
         header.addWidget(self.run_button)
         layout.addLayout(header)
 
@@ -326,10 +376,9 @@ class AnalysisPage(QWidget):
         self._compare = compare
         self._apply_mode()
         self._sync_playback()
-        self._apply_analysis_results(
-            self._published_results.get(0),
-            self._published_results.get(1),
-        )
+        self._publish_available_results()
+        if compare:
+            self._run_timing_alignment((1,))
         if (
             compare
             and 1 not in self._published_results
@@ -352,7 +401,12 @@ class AnalysisPage(QWidget):
         return tuple(panel for panel in panels if panel.has_recording())
 
     def _timeline_count(self) -> int:
-        return max((panel.frame_count for panel in self._playback_panels()), default=0)
+        counts = (
+            max(0, panel.frame_count - self._alignment_start(panel_index))
+            for panel_index, panel in enumerate((self.panel_a, self.panel_b))
+            if panel in self._playback_panels()
+        )
+        return max(counts, default=0)
 
     def _sync_playback(self, reset: bool = False) -> None:
         count = self._timeline_count()
@@ -362,8 +416,15 @@ class AnalysisPage(QWidget):
 
     def _drive_index(self, index: int) -> None:
         self.playback_bar.set_index(index)
-        for panel in self._playback_panels():
-            panel.show_frame(index)
+        for panel_index, panel in enumerate((self.panel_a, self.panel_b)):
+            if panel in self._playback_panels():
+                panel.show_frame(index + self._alignment_start(panel_index))
+
+    def _alignment_start(self, panel_index: int) -> int:
+        if not self.timing_stage.is_enabled():
+            return 0
+        result = self._timing_results.get(panel_index)
+        return result.start_frame if result is not None else 0
 
     def _on_play_toggled(self, playing: bool) -> None:
         if playing:
@@ -434,6 +495,15 @@ class AnalysisPage(QWidget):
         else:
             self.stage.set_status(None)
 
+    def _on_timing_stage_enabled(self, enabled: bool) -> None:
+        self._pause()
+        if enabled:
+            self._run_timing_alignment()
+        else:
+            self.timing_stage.set_status(None)
+            self._sync_playback(reset=True)
+            self._publish_available_results()
+
     def _on_radius_changed(self, radius: int) -> None:
         for panel in (self.panel_a, self.panel_b):
             panel.set_roi_radius(radius)
@@ -454,19 +524,23 @@ class AnalysisPage(QWidget):
     def _on_panel_a_opened(self, info: RecordingInfo) -> None:
         self._pause()
         self._published_results.pop(0, None)
+        self._invalidate_timing(0)
         self._legend.getLabel(self._curve_a).setText(info.name)
         frame = self.panel_a.current_frame
         if frame is not None:
             level, width = auto_window(frame)
             self.visualization_panel.apply_window(level, width)
         self._sync_playback(reset=True)
+        self._run_timing_alignment((0,))
         self._run_analysis((0,))
 
     def _on_panel_b_opened(self, info: RecordingInfo) -> None:
         self._pause()
         self._published_results.pop(1, None)
+        self._invalidate_timing(1)
         self._legend.getLabel(self._curve_b).setText(info.name)
         self._sync_playback(reset=True)
+        self._run_timing_alignment((1,))
         self._run_analysis((1,))
 
     def _on_panel_cleared(self, panel: RecordingPanel) -> None:
@@ -476,10 +550,90 @@ class AnalysisPage(QWidget):
             if task.panel_index == panel_index:
                 task.cancelled = True
         self._published_results.pop(panel_index, None)
+        self._invalidate_timing(panel_index)
         panel.frame_view._placeholder = "No recordings found"
         panel.frame_view.update()
         self._sync_playback(reset=True)
         self._clear_results()
+
+    def _invalidate_timing(self, panel_index: int) -> None:
+        self._timing_generations[panel_index] += 1
+        self._timing_results.pop(panel_index, None)
+        for task in self._timing_tasks:
+            if task.panel_index == panel_index:
+                task.cancelled = True
+
+    def _run_timing_alignment(self, panel_indices: tuple[int, ...] | None = None) -> None:
+        if not self.timing_stage.is_enabled():
+            return
+        panels = (self.panel_a, self.panel_b)
+        active_indices = (0, 1) if self._compare else (0,)
+        indices = active_indices if panel_indices is None else panel_indices
+        pending_indices = tuple(
+            index
+            for index in indices
+            if panels[index].has_recording()
+            and index not in self._timing_results
+            and not any(
+                task.panel_index == index and not task.cancelled for task in self._timing_tasks
+            )
+        )
+        if not pending_indices:
+            self._publish_available_results()
+            return
+        self.timing_stage.set_status("Detecting contrast injection...")
+        self._publish_available_results()
+        for panel_index in pending_indices:
+            task = _TimingTask(self._timing_generations[panel_index], panel_index, panels[panel_index])
+            task.signals.finished.connect(self._on_timing_completed)
+            task.signals.failed.connect(self._timing_failed)
+            self._timing_tasks.add(task)
+            self._analysis_pool.start(task)
+
+    def _on_timing_completed(
+        self,
+        generation: int,
+        panel_index: int,
+        result: TimingAlignmentResult | None,
+    ) -> None:
+        task = next(
+            (
+                candidate
+                for candidate in self._timing_tasks
+                if candidate.generation == generation and candidate.panel_index == panel_index
+            ),
+            None,
+        )
+        if task is not None:
+            self._timing_tasks.remove(task)
+        if generation != self._timing_generations[panel_index] or result is None:
+            return
+        self._timing_results[panel_index] = result
+        if self.timing_stage.is_enabled() and not any(
+            not candidate.cancelled for candidate in self._timing_tasks
+        ):
+            active_count = 2 if self._compare else 1
+            active_results = (self._timing_results.get(index) for index in range(active_count))
+            if any(item is not None and item.injection_frame == 0 for item in active_results):
+                self.timing_stage.set_status("No injection detected; recording left untrimmed.")
+            else:
+                self.timing_stage.set_status("Injection timing aligned to 5.00 s.")
+        self._sync_playback(reset=True)
+        self._publish_available_results()
+
+    def _timing_failed(self, generation: int, panel_index: int, error: object) -> None:
+        task = next(
+            (
+                candidate
+                for candidate in self._timing_tasks
+                if candidate.generation == generation and candidate.panel_index == panel_index
+            ),
+            None,
+        )
+        if task is not None:
+            self._timing_tasks.remove(task)
+        if generation == self._timing_generations[panel_index]:
+            self.timing_stage.set_status(f"Timing alignment failed: {error}", is_error=True)
 
     def _run_analysis(self, panel_indices: tuple[int, ...] | None = None) -> None:
         if not self.stage.is_enabled():
@@ -533,9 +687,17 @@ class AnalysisPage(QWidget):
         self._published_results[panel_index] = result
         (self.panel_a, self.panel_b)[panel_index].frame_view.set_roi_processing(False)
         self._set_analysis_running(any(not candidate.cancelled for candidate in self._analysis_tasks))
+        self._publish_available_results()
+
+    def _publish_available_results(self) -> None:
+        def ready_result(panel_index: int) -> ROIResidenceResult | None:
+            if self.timing_stage.is_enabled() and panel_index not in self._timing_results:
+                return None
+            return self._published_results.get(panel_index)
+
         self._apply_analysis_results(
-            self._published_results.get(0),
-            self._published_results.get(1),
+            ready_result(0),
+            ready_result(1),
         )
 
     def _apply_analysis_results(
@@ -544,15 +706,22 @@ class AnalysisPage(QWidget):
         result_b: ROIResidenceResult | None,
     ) -> None:
         if result_a is not None:
-            self._curve_a.setData(result_a.time, result_a.contrast)
+            self._set_aligned_curve(self._curve_a, 0, result_a)
         else:
             self._curve_a.setData([], [])
         if result_b is not None:
-            self._curve_b.setData(result_b.time, result_b.contrast)
+            self._set_aligned_curve(self._curve_b, 1, result_b)
         elif self._compare:
             self._curve_b.setData([], [])
 
         self._update_cards(result_a, result_b)
+
+    def _set_aligned_curve(self, curve: object, panel_index: int, result: ROIResidenceResult) -> None:
+        start_frame = self._alignment_start(panel_index)
+        time = result.time[start_frame:]
+        if time.size:
+            time = time - time[0]
+        curve.setData(time, result.contrast[start_frame:])
 
     def _analysis_failed(self, generation: int, panel_index: int, error: object) -> None:
         task = next(
