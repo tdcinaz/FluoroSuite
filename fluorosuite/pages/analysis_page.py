@@ -791,7 +791,11 @@ class AnalysisPage(QWidget):
         self._update_cards(result_a, result_b)
 
     def _set_aligned_curve(self, curve: object, panel_index: int, result: ROIResidenceResult) -> None:
-        curve.setData(result.time, result.contrast)
+        start_frame = self._alignment_start(panel_index)
+        time = result.time[start_frame:]
+        if time.size:
+            time = time - time[0]
+        curve.setData(time, result.contrast[start_frame:])
 
     def _analysis_failed(self, generation: int, panel_index: int, error: object) -> None:
         task = next(
