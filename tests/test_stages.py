@@ -9,6 +9,13 @@ from fluorosuite.pipeline.stages import _analyze_roi_means, detect_injection_tim
 
 
 class ROIResidenceTests(unittest.TestCase):
+    def test_returns_raw_contrast_without_smoothing(self) -> None:
+        roi_mean = np.array([100.0, 100.0, 90.0, 100.0, 80.0], dtype=np.float32)
+
+        result = _analyze_roi_means(roi_mean, ROIParameters(baseline_frames=2), fps=30.0)
+
+        np.testing.assert_array_equal(result.contrast, result.baseline - roi_mean)
+
     def test_places_baseline_after_startup_ramp_stabilizes(self) -> None:
         ramp = np.linspace(100.0, 120.0, 90, dtype=np.float32)
         plateau = np.full(120, 120.0, dtype=np.float32)

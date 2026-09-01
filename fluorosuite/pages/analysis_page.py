@@ -293,9 +293,6 @@ class AnalysisPage(QWidget):
         self.clearance_spin.setRange(0.01, 0.90)
         self.clearance_spin.setSingleStep(0.05)
         self.clearance_spin.setValue(0.10)
-        self.smoothing_spin = QSpinBox()
-        self.smoothing_spin.setRange(1, 31)
-        self.smoothing_spin.setValue(5)
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
@@ -303,11 +300,10 @@ class AnalysisPage(QWidget):
         self._add_param(grid, 0, "ROI radius (px)", self.radius_spin)
         self._add_param(grid, 1, "Baseline window (frames)", self.baseline_spin)
         self._add_param(grid, 2, "Clearance fraction", self.clearance_spin)
-        self._add_param(grid, 3, "Smoothing window", self.smoothing_spin)
         stage.content_layout.addLayout(grid)
 
         self.radius_spin.valueChanged.connect(self._on_radius_changed)
-        for widget in (self.baseline_spin, self.clearance_spin, self.smoothing_spin):
+        for widget in (self.baseline_spin, self.clearance_spin):
             widget.valueChanged.connect(lambda _value: self._run_analysis())
 
         stage.set_expanded(True)
@@ -475,7 +471,6 @@ class AnalysisPage(QWidget):
             roi_radius=self.radius_spin.value(),
             baseline_frames=self.baseline_spin.value(),
             clearance_fraction=self.clearance_spin.value(),
-            smoothing_window=self.smoothing_spin.value(),
         )
 
     # -- public ---------------------------------------------------------------

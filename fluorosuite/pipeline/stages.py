@@ -79,13 +79,6 @@ def detect_injection_timing(
     return TimingAlignmentResult(injection_frame, start_frame, fps)
 
 
-def _smooth(values: np.ndarray, window: int) -> np.ndarray:
-    if window <= 1 or values.size < window:
-        return values
-    kernel = np.ones(window, dtype=np.float32) / float(window)
-    return np.convolve(values, kernel, mode="same")
-
-
 def _stable_baseline_start(
     roi_mean: np.ndarray,
     baseline_frames: int,
@@ -190,7 +183,6 @@ def _analyze_roi_means(
     baseline = float(np.mean(roi_mean[baseline_start : baseline_start + baseline_frames]))
 
     contrast = baseline - roi_mean
-    contrast = _smooth(contrast, parameters.smoothing_window)
 
     peak_index = int(np.argmax(contrast)) if count else 0
     peak_contrast = float(contrast[peak_index]) if count else 0.0

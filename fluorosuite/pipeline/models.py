@@ -26,7 +26,6 @@ class ROIParameters:
     roi_radius: int = 70
     baseline_frames: int = 8
     clearance_fraction: float = 0.10
-    smoothing_window: int = 5
 
 
 @dataclass(frozen=True, slots=True)
