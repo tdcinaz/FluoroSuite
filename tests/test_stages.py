@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from fluorosuite.pipeline.models import ROIParameters
+from fluorosuite.pipeline.models import ROIParameters, TimingAlignmentResult
 from fluorosuite.pipeline.stages import analyze_roi_means, detect_injection_timing
 
 
@@ -48,6 +48,18 @@ class TimingAlignmentTests(unittest.TestCase):
         self.assertGreaterEqual(result.injection_frame, 83)
         self.assertLessEqual(result.injection_frame, 94)
         self.assertAlmostEqual((result.injection_frame - result.start_frame) / fps, 5.0)
+
+
+class PlaybackBoundsTests(unittest.TestCase):
+    def test_trim_bounds_include_one_second_before_and_fifteen_after_injection(self) -> None:
+        timing = TimingAlignmentResult(injection_frame=100, start_frame=50, fps=10.0)
+
+        self.assertEqual(timing.playback_bounds(400), (90, 251))
+
+    def test_trim_bounds_leave_recording_untrimmed_without_detected_injection(self) -> None:
+        timing = TimingAlignmentResult(injection_frame=0, start_frame=0, fps=10.0)
+
+        self.assertEqual(timing.playback_bounds(400), (0, 400))
 
 
 if __name__ == "__main__":

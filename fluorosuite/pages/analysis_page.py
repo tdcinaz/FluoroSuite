@@ -255,6 +255,7 @@ class AnalysisPage(QWidget):
         )
         self.visualization_panel.set_dark_field_available(self.panel_a._correction is not None)
         self.visualization_panel.changed.connect(self._on_visualization_changed)
+        self.visualization_panel.trimPlaybackChanged.connect(self._on_trim_playback_changed)
         self.visualization_panel.rotationChanged.connect(self._on_rotation_changed)
         self.visualization_panel.secondaryRotationChanged.connect(
             self._on_secondary_rotation_changed
@@ -414,11 +415,20 @@ class AnalysisPage(QWidget):
 
     def _timeline_count(self) -> int:
         counts = (
-            max(0, panel.frame_count - self._alignment_start(panel_index))
+            end - start
             for panel_index, panel in enumerate((self.panel_a, self.panel_b))
             if panel in self._playback_panels()
+            for start, end in (self._playback_bounds(panel_index, panel),)
         )
         return max(counts, default=0)
+
+    def _playback_bounds(self, panel_index: int, panel: RecordingPanel) -> tuple[int, int]:
+        if not self.visualization_panel.trim_playback.isChecked():
+            return self._alignment_start(panel_index), panel.frame_count
+        result = self._timing_results.get(panel_index)
+        if result is None:
+            return self._alignment_start(panel_index), panel.frame_count
+        return result.playback_bounds(panel.frame_count)
 
     def _sync_playback(self, reset: bool = False) -> None:
         count = self._timeline_count()
@@ -430,7 +440,8 @@ class AnalysisPage(QWidget):
         self.playback_bar.set_index(index)
         for panel_index, panel in enumerate((self.panel_a, self.panel_b)):
             if panel in self._playback_panels():
-                panel.show_frame(index + self._alignment_start(panel_index))
+                start, _end = self._playback_bounds(panel_index, panel)
+                panel.show_frame(index + start)
 
     def _alignment_start(self, panel_index: int) -> int:
         if not self.timing_stage.is_enabled():
@@ -526,6 +537,10 @@ class AnalysisPage(QWidget):
     def _on_visualization_changed(self, visualization: Visualization) -> None:
         for panel in (self.panel_a, self.panel_b):
             panel.set_visualization(visualization.with_rotation(panel.rotation))
+
+    def _on_trim_playback_changed(self, enabled: bool) -> None:  # noqa: ARG002
+        self._pause()
+        self._sync_playback(reset=True)
 
     def _on_rotation_changed(self, rotation: int) -> None:
         if self.panel_a.has_recording():
@@ -776,11 +791,7 @@ class AnalysisPage(QWidget):
         self._update_cards(result_a, result_b)
 
     def _set_aligned_curve(self, curve: object, panel_index: int, result: ROIResidenceResult) -> None:
-        start_frame = self._alignment_start(panel_index)
-        time = result.time[start_frame:]
-        if time.size:
-            time = time - time[0]
-        curve.setData(time, result.contrast[start_frame:])
+        curve.setData(result.time, result.contrast)
 
     def _analysis_failed(self, generation: int, panel_index: int, error: object) -> None:
         task = next(

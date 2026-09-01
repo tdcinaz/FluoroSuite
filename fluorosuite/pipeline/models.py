@@ -55,3 +55,14 @@ class TimingAlignmentResult:
     injection_frame: int
     start_frame: int
     fps: float
+
+    def playback_bounds(self, frame_count: int) -> tuple[int, int]:
+        """Return the injection-centered playback interval as [start, end)."""
+        frame_count = max(0, int(frame_count))
+        if self.injection_frame <= 0:
+            return 0, frame_count
+        lead_frames = round(self.fps)
+        follow_frames = round(15.0 * self.fps)
+        start = max(0, self.injection_frame - lead_frames)
+        end = min(frame_count, self.injection_frame + follow_frames + 1)
+        return start, max(start, end)

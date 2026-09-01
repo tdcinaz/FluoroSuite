@@ -13,6 +13,7 @@ from ..recordings import (
     RecordingReader,
     list_recordings,
     load_saved_rotation,
+    load_saved_timing_alignment,
     save_rotation,
 )
 from ..visualization import DarkFieldCorrection, Visualization
@@ -53,6 +54,7 @@ class RecordingViewer(QWidget):
         self.playback_bar.indexChanged.connect(self._on_scrub)
         self.playback_bar.speed.currentIndexChanged.connect(self._update_timer_interval)
         self.visualization_panel.changed.connect(self._on_visualization_changed)
+        self.visualization_panel.trimPlaybackChanged.connect(self._on_trim_playback_changed)
         self.visualization_panel.rotationChanged.connect(self._on_rotation_changed)
 
     def refresh_recordings(self) -> None:
@@ -91,11 +93,26 @@ class RecordingViewer(QWidget):
         self.visualization_panel.set_rotation(rotation)
         self._visualization = self._visualization.with_rotation(rotation)
         self.frame_view.set_visualization(self._visualization)
-        self.playback_bar.set_frame_count(self._reader.frame_count)
-        self._load_frame(0)
+        self._sync_playback(reset=True)
         self._on_recording_opened(info)
 
     # -- playback -------------------------------------------------------------
+    def _playback_bounds(self) -> tuple[int, int]:
+        if self._reader is None:
+            return 0, 0
+        frame_count = self._reader.frame_count
+        if not self.visualization_panel.trim_playback.isChecked() or self._info is None:
+            return 0, frame_count
+        timing = load_saved_timing_alignment(self._info.path)
+        return timing.playback_bounds(frame_count) if timing is not None else (0, frame_count)
+
+    def _sync_playback(self, reset: bool = False) -> None:
+        start, end = self._playback_bounds()
+        frame_count = end - start
+        self.playback_bar.set_frame_count(frame_count)
+        index = 0 if reset else min(self.playback_bar.index(), max(0, frame_count - 1))
+        self._load_frame(start + index)
+
     def _load_frame(self, index: int) -> None:
         if self._reader is None:
             return
@@ -103,7 +120,8 @@ class RecordingViewer(QWidget):
         if frame is None:
             return
         self._current_frame = frame
-        self.playback_bar.set_index(index)
+        start, _end = self._playback_bounds()
+        self.playback_bar.set_index(index - start)
         self._render_current()
         self._on_frame_shown(index, frame)
 
@@ -134,14 +152,15 @@ class RecordingViewer(QWidget):
     def _advance(self) -> None:
         if self._reader is None:
             return
+        start, end = self._playback_bounds()
         index = self.playback_bar.index()
-        if index >= self._reader.frame_count - 1:
+        if index >= end - start - 1:
             if self.playback_bar.is_looping():
-                self._load_frame(0)
+                self._load_frame(start)
             else:
                 self._pause()
             return
-        self._load_frame(index + 1)
+        self._load_frame(start + index + 1)
 
     def _update_timer_interval(self) -> None:
         fps = self._info.fps if self._info else 15.0
@@ -150,12 +169,17 @@ class RecordingViewer(QWidget):
 
     def _on_scrub(self, index: int) -> None:
         self._pause()
-        self._load_frame(index)
+        start, _end = self._playback_bounds()
+        self._load_frame(start + index)
 
     def _on_visualization_changed(self, visualization: Visualization) -> None:
         self._visualization = visualization
         self.frame_view.set_visualization(visualization)
         self._render_current()
+
+    def _on_trim_playback_changed(self, enabled: bool) -> None:  # noqa: ARG002
+        self._pause()
+        self._sync_playback(reset=True)
 
     def _on_rotation_changed(self, rotation: int) -> None:
         if self._info is not None:

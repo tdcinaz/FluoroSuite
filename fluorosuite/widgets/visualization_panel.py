@@ -20,6 +20,7 @@ from ..visualization import Visualization
 
 class VisualizationPanel(QWidget):
     changed = Signal(object)  # emits a Visualization
+    trimPlaybackChanged = Signal(bool)
     rotationChanged = Signal(int)
     secondaryRotationChanged = Signal(int)
 
@@ -86,6 +87,7 @@ class VisualizationPanel(QWidget):
 
         self.invert = QCheckBox("Invert grayscale")
         self.dark_field = QCheckBox("Dark-field correction")
+        self.trim_playback = QCheckBox("Trim playback")
         self.dark_field.setChecked(True)
         self.dark_field.setEnabled(False)
 
@@ -100,6 +102,7 @@ class VisualizationPanel(QWidget):
         options.setSpacing(10)
         options.addWidget(self.invert)
         options.addWidget(self.dark_field)
+        options.addWidget(self.trim_playback)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -115,6 +118,7 @@ class VisualizationPanel(QWidget):
         self.secondary_rotation.valueChanged.connect(self._on_secondary_rotation_changed)
         self.invert.toggled.connect(self._emit)
         self.dark_field.toggled.connect(self._emit)
+        self.trim_playback.toggled.connect(self.trimPlaybackChanged)
         self.auto_button.clicked.connect(self._apply_auto)
         self.reset_button.clicked.connect(self._reset)
 
