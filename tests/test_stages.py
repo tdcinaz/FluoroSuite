@@ -4,11 +4,40 @@ import unittest
 
 import numpy as np
 
-from fluorosuite.pipeline.models import ROIParameters
-from fluorosuite.pipeline.stages import _analyze_roi_means, detect_injection_timing
+from fluorosuite.pipeline.models import ROIParameters, RectangleROI
+from fluorosuite.pipeline.stages import analyze_roi_residence, _analyze_roi_means, detect_injection_timing
 
 
 class ROIResidenceTests(unittest.TestCase):
+    def test_rectangle_defaults_and_center_corner_geometry(self) -> None:
+        rectangle = RectangleROI.from_center_corner(50, 40, 85, 50)
+
+        self.assertEqual((rectangle.center_x, rectangle.center_y), (50, 40))
+        self.assertEqual((rectangle.width, rectangle.height), (70, 20))
+
+    def test_rectangle_mask_covers_only_rectangle(self) -> None:
+        rectangle = RectangleROI(2, 2, width=2, height=2)
+        frame = np.arange(25, dtype=np.uint16).reshape(5, 5)
+
+        values = frame[rectangle.mask(frame.shape)]
+
+        np.testing.assert_array_equal(values, np.array([6, 7, 11, 12], dtype=np.uint16))
+
+    def test_rectangle_uses_residence_analysis(self) -> None:
+        rectangle = RectangleROI(2, 2, width=2, height=2)
+        frames = np.stack(
+            (
+                np.full((5, 5), 100, dtype=np.uint16),
+                np.full((5, 5), 100, dtype=np.uint16),
+                np.full((5, 5), 60, dtype=np.uint16),
+            )
+        )
+
+        result = analyze_roi_residence(frames, rectangle, ROIParameters(baseline_frames=2), fps=1.0)
+
+        np.testing.assert_array_equal(result.roi_mean, np.array([100, 100, 60], dtype=np.float32))
+        self.assertGreater(result.peak_contrast, 0.0)
+
     def test_places_baseline_after_startup_ramp_stabilizes(self) -> None:
         ramp = np.linspace(100.0, 120.0, 90, dtype=np.float32)
         plateau = np.full(120, 120.0, dtype=np.float32)

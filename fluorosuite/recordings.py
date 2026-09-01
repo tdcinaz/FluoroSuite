@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import COLUMNS, PIXEL_BYTES, ROWS
-from .pipeline.models import Circle, TimingAlignmentResult
+from .pipeline.models import Circle, RectangleROI, TimingAlignmentResult
 
 
 def _read_sidecar(path: Path) -> dict:
@@ -62,6 +62,36 @@ def save_roi(path: Path, roi: Circle) -> None:
         path,
         "roi",
         {"center_x": roi.center_x, "center_y": roi.center_y, "radius": roi.radius},
+    )
+
+
+def load_saved_rectangular_roi(path: Path) -> RectangleROI | None:
+    value = _read_analysis_value(path, "rectangular_roi")
+    if not isinstance(value, dict):
+        return None
+    try:
+        return RectangleROI(
+            center_x=int(value["center_x"]),
+            center_y=int(value["center_y"]),
+            width=max(1, int(value["width"])),
+            height=max(1, int(value["height"])),
+            angle=float(value.get("angle", 0.0)),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def save_rectangular_roi(path: Path, roi: RectangleROI) -> None:
+    _write_analysis_value(
+        path,
+        "rectangular_roi",
+        {
+            "center_x": roi.center_x,
+            "center_y": roi.center_y,
+            "width": roi.width,
+            "height": roi.height,
+            "angle": roi.angle,
+        },
     )
 
 

@@ -7,7 +7,7 @@ from PySide6.QtCore import QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import QComboBox, QSizePolicy, QWidget
 
-from ..pipeline.models import Circle
+from ..pipeline.models import Circle, RectangleROI
 from ..theme import ROI_COLOR
 from ..visualization import Visualization, to_qimage
 
@@ -16,6 +16,7 @@ class FrameView(QWidget):
     """Aspect-correct display for raw frames, with click-to-place ROI support."""
 
     roiPlaced = Signal(object)  # emits a Circle
+    rectangularRoiPlaced = Signal(object)  # emits a RectangleROI
 
     def __init__(self, placeholder: str = "No frame", parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -33,6 +34,15 @@ class FrameView(QWidget):
         self._roi_color = QColor(ROI_COLOR)
         self._roi_processing = False
         self._roi_progress = 0.0
+        self._roi_analysis_complete = False
+        self.rectangular_roi_editable = False
+        self.rectangular_roi_width = 120
+        self.rectangular_roi_height = 40
+        self._rectangular_roi: RectangleROI | None = None
+        self._pending_rectangular_center: QPoint | None = None
+        self._rectangular_roi_processing = False
+        self._rectangular_roi_progress = 0.0
+        self._rectangular_roi_analysis_complete = False
 
         self.setMinimumSize(320, 320)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -78,13 +88,31 @@ class FrameView(QWidget):
     # -- roi ------------------------------------------------------------------
     def set_roi(self, roi: Circle | None) -> None:
         self._roi = roi
+        self._roi_analysis_complete = False
         if roi is not None:
             self.roi_radius = roi.radius
         self.update()
 
     def set_roi_processing(self, processing: bool, progress: float = 0.0) -> None:
         self._roi_processing = processing
+        if processing:
+            self._roi_analysis_complete = False
         self._roi_progress = min(1.0, max(0.0, float(progress))) if processing else 0.0
+        self.update()
+
+    def set_roi_analysis_complete(self, complete: bool) -> None:
+        self._roi_analysis_complete = complete
+        self.update()
+
+    def set_rectangular_roi_processing(self, processing: bool, progress: float = 0.0) -> None:
+        self._rectangular_roi_processing = processing
+        if processing:
+            self._rectangular_roi_analysis_complete = False
+        self._rectangular_roi_progress = min(1.0, max(0.0, float(progress))) if processing else 0.0
+        self.update()
+
+    def set_rectangular_roi_analysis_complete(self, complete: bool) -> None:
+        self._rectangular_roi_analysis_complete = complete
         self.update()
 
     def roi(self) -> Circle | None:
@@ -92,6 +120,7 @@ class FrameView(QWidget):
 
     def set_roi_radius(self, radius: int) -> None:
         self.roi_radius = max(1, int(radius))
+        self._roi_analysis_complete = False
         if self._roi is not None:
             self._roi = Circle(self._roi.center_x, self._roi.center_y, self.roi_radius)
             self.roiPlaced.emit(self._roi)
@@ -100,6 +129,43 @@ class FrameView(QWidget):
     def set_roi_editable(self, editable: bool) -> None:
         self.roi_editable = editable
         self.setCursor(Qt.CursorShape.CrossCursor if editable else Qt.CursorShape.ArrowCursor)
+
+    def set_rectangular_roi_editable(self, editable: bool) -> None:
+        self.rectangular_roi_editable = editable
+        self._pending_rectangular_center = None
+        self.setCursor(Qt.CursorShape.CrossCursor if editable else Qt.CursorShape.ArrowCursor)
+
+    def rectangular_roi(self) -> RectangleROI | None:
+        return self._rectangular_roi
+
+    def set_rectangular_roi(self, roi: RectangleROI | None) -> None:
+        self._rectangular_roi = roi
+        self._rectangular_roi_analysis_complete = False
+        if roi is not None:
+            self.rectangular_roi_width = roi.width
+            self.rectangular_roi_height = roi.height
+        self.update()
+
+    def set_rectangular_roi_width(self, width: int) -> None:
+        self.rectangular_roi_width = max(1, int(width))
+        self._resize_rectangular_roi()
+
+    def set_rectangular_roi_height(self, height: int) -> None:
+        self.rectangular_roi_height = max(1, int(height))
+        self._resize_rectangular_roi()
+
+    def _resize_rectangular_roi(self) -> None:
+        self._rectangular_roi_analysis_complete = False
+        if self._rectangular_roi is not None:
+            self._rectangular_roi = RectangleROI(
+                self._rectangular_roi.center_x,
+                self._rectangular_roi.center_y,
+                self.rectangular_roi_width,
+                self.rectangular_roi_height,
+                self._rectangular_roi.angle,
+            )
+            self.rectangularRoiPlaced.emit(self._rectangular_roi)
+        self.update()
 
     # -- painting -------------------------------------------------------------
     def paintEvent(self, event) -> None:  # noqa: ANN001
@@ -120,7 +186,7 @@ class FrameView(QWidget):
             center = self._frame_to_display(QPoint(self._roi.center_x, self._roi.center_y))
             scale = self._display_rect.width() / max(1, self._frame.shape[1])
             radius = max(1, round(self._roi.radius * scale))
-            roi_color = QColor("#facc15") if self._roi_processing else self._roi_color
+            roi_color = QColor("#facc15") if self._roi_processing or not self._roi_analysis_complete else QColor(ROI_COLOR)
             painter.setPen(QPen(roi_color, 2))
             if self._roi_processing:
                 painter.setBrush(QColor(roi_color.red(), roi_color.green(), roi_color.blue(), 55))
@@ -129,11 +195,47 @@ class FrameView(QWidget):
                 painter.drawPie(bounds, 90 * 16, -round(self._roi_progress * 360 * 16))
                 painter.setPen(QPen(roi_color, 2))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
-            else:
+            elif self._roi_analysis_complete:
                 painter.setBrush(QColor(roi_color.red(), roi_color.green(), roi_color.blue(), 40))
+            else:
+                painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(center, radius, radius)
             painter.setPen(QColor("#f8fafc"))
             painter.drawText(center + QPoint(radius + 4, -radius), "ROI")
+
+        if self._rectangular_roi is not None and self._frame is not None:
+            center = self._frame_to_display(QPoint(self._rectangular_roi.center_x, self._rectangular_roi.center_y))
+            x_scale = self._display_rect.width() / max(1, self._frame.shape[1])
+            y_scale = self._display_rect.height() / max(1, self._frame.shape[0])
+            width = max(1, round(self._rectangular_roi.width * x_scale))
+            height = max(1, round(self._rectangular_roi.height * y_scale))
+            bounds = QRect(center.x() - width // 2, center.y() - height // 2, width, height)
+            roi_color = (
+                QColor("#facc15")
+                if self._rectangular_roi_processing or not self._rectangular_roi_analysis_complete
+                else QColor(ROI_COLOR)
+            )
+            painter.setPen(QPen(roi_color, 2))
+            painter.setBrush(
+                QColor(roi_color.red(), roi_color.green(), roi_color.blue(), 40)
+                if self._rectangular_roi_analysis_complete
+                else Qt.BrushStyle.NoBrush
+            )
+            painter.save()
+            painter.translate(center)
+            painter.rotate(self._rectangular_roi.angle)
+            bounds = QRect(-width // 2, -height // 2, width, height)
+            if self._rectangular_roi_processing:
+                painter.setBrush(QColor(roi_color.red(), roi_color.green(), roi_color.blue(), 55))
+                painter.setPen(Qt.PenStyle.NoPen)
+                fill_width = round(width * self._rectangular_roi_progress)
+                painter.drawRect(QRect(bounds.left(), bounds.top(), fill_width, height))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.setPen(QPen(roi_color, 2))
+            else:
+                painter.setPen(QPen(roi_color, 2))
+            painter.drawRect(bounds)
+            painter.restore()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -176,11 +278,55 @@ class FrameView(QWidget):
 
     # -- interaction ----------------------------------------------------------
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.RightButton and self.rectangular_roi_editable:
+            frame_point = self._display_to_frame(event.position().toPoint())
+            if frame_point is None:
+                return
+            self._rectangular_roi_analysis_complete = False
+            self._pending_rectangular_center = frame_point
+            self._rectangular_roi = RectangleROI(
+                frame_point.x(),
+                frame_point.y(),
+                self.rectangular_roi_width,
+                self.rectangular_roi_height,
+            )
+            self.update()
+            return
+
         if not self.roi_editable or event.button() != Qt.MouseButton.LeftButton:
             return
         frame_point = self._display_to_frame(event.position().toPoint())
         if frame_point is None:
             return
+        self._roi_analysis_complete = False
         self._roi = Circle(frame_point.x(), frame_point.y(), self.roi_radius)
         self.roiPlaced.emit(self._roi)
         self.update()
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if (
+            self.rectangular_roi_editable
+            and self._pending_rectangular_center is not None
+            and event.buttons() & Qt.MouseButton.RightButton
+        ):
+            frame_point = self._display_to_frame(event.position().toPoint())
+            if frame_point is not None:
+                center = self._pending_rectangular_center
+                angle = float(np.degrees(np.arctan2(frame_point.y() - center.y(), frame_point.x() - center.x())))
+                self._rectangular_roi = RectangleROI(
+                    center.x(),
+                    center.y(),
+                    self.rectangular_roi_width,
+                    self.rectangular_roi_height,
+                    angle,
+                )
+                self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.RightButton and self._pending_rectangular_center is not None:
+            self._pending_rectangular_center = None
+            if self._rectangular_roi is not None:
+                self.rectangularRoiPlaced.emit(self._rectangular_roi)
+            self.update()
+        super().mouseReleaseEvent(event)

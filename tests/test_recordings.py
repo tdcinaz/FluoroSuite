@@ -5,9 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fluorosuite.pipeline import Circle, TimingAlignmentResult
+from fluorosuite.pipeline import Circle, RectangleROI, TimingAlignmentResult
 from fluorosuite.recordings import (
+    load_saved_rectangular_roi,
     load_saved_roi,
+    save_rectangular_roi,
     load_saved_timing_alignment,
     save_roi,
     save_timing_alignment,
@@ -40,6 +42,38 @@ class RecordingAnalysisMetadataTests(unittest.TestCase):
             save_roi(raw_path, Circle(40, 50, 60))
 
             self.assertEqual(load_saved_roi(raw_path), Circle(40, 50, 60))
+
+    def test_saves_and_loads_rectangular_roi_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            raw_path = Path(temporary_directory) / "recording.raw"
+            rectangle = RectangleROI(100, 200, width=120, height=40, angle=27.5)
+
+            save_rectangular_roi(raw_path, rectangle)
+
+            self.assertEqual(load_saved_rectangular_roi(raw_path), rectangle)
+
+    def test_loads_rectangular_roi_without_legacy_angle(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            raw_path = Path(temporary_directory) / "recording.raw"
+            raw_path.with_suffix(".json").write_text(
+                json.dumps(
+                    {
+                        "analysis": {
+                            "rectangular_roi": {
+                                "center_x": 100,
+                                "center_y": 200,
+                                "width": 120,
+                                "height": 40,
+                            }
+                        }
+                    }
+                )
+            )
+
+            self.assertEqual(
+                load_saved_rectangular_roi(raw_path),
+                RectangleROI(100, 200, width=120, height=40),
+            )
 
 
 if __name__ == "__main__":

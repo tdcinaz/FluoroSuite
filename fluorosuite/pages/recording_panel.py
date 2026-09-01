@@ -11,8 +11,16 @@ import numpy as np
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-from ..pipeline import Circle
-from ..recordings import RecordingInfo, RecordingReader, list_recordings, load_saved_roi, save_roi
+from ..pipeline import Circle, RectangleROI
+from ..recordings import (
+    RecordingInfo,
+    RecordingReader,
+    list_recordings,
+    load_saved_rectangular_roi,
+    load_saved_roi,
+    save_rectangular_roi,
+    save_roi,
+)
 from ..visualization import DarkFieldCorrection, Visualization
 from ..widgets import FrameView
 from ..widgets.recording_selector import RecordingSelector
@@ -22,6 +30,7 @@ class RecordingPanel(QWidget):
     """One recorded run with its own selector and ROI overlay, driven externally."""
 
     roiPlaced = Signal(object)  # emits a Circle
+    rectangularRoiPlaced = Signal(object)  # emits a RectangleROI
     recordingOpened = Signal(object)  # emits a RecordingInfo
     recordingCleared = Signal()
 
@@ -47,6 +56,7 @@ class RecordingPanel(QWidget):
         self.recording_selector.currentIndexChanged.connect(self._open_selected)
         self.recording_selector.popupAboutToShow.connect(self.refresh_recordings)
         self.frame_view.roiPlaced.connect(self._on_roi_placed)
+        self.frame_view.rectangularRoiPlaced.connect(self._on_rectangular_roi_placed)
 
         self._build_layout()
 
@@ -86,6 +96,15 @@ class RecordingPanel(QWidget):
         self.frame_view.set_roi_radius(radius)
         if self._roi is not None:
             self._roi = Circle(self._roi.center_x, self._roi.center_y, radius)
+
+    def set_rectangular_roi_editable(self, editable: bool) -> None:
+        self.frame_view.set_rectangular_roi_editable(editable)
+
+    def set_rectangular_roi_width(self, width: int) -> None:
+        self.frame_view.set_rectangular_roi_width(width)
+
+    def set_rectangular_roi_height(self, height: int) -> None:
+        self.frame_view.set_rectangular_roi_height(height)
 
     def clear_roi(self) -> None:
         self._roi = None
@@ -157,6 +176,7 @@ class RecordingPanel(QWidget):
         self._reader = RecordingReader(info.path)
         self._roi = load_saved_roi(info.path)
         self.frame_view.set_roi(self._roi)
+        self.frame_view.set_rectangular_roi(load_saved_rectangular_roi(info.path))
         self.show_frame(0)
         self.recordingOpened.emit(info)
 
@@ -174,3 +194,8 @@ class RecordingPanel(QWidget):
         if self._info is not None:
             save_roi(self._info.path, roi)
         self.roiPlaced.emit(roi)
+
+    def _on_rectangular_roi_placed(self, roi: RectangleROI) -> None:
+        if self._info is not None:
+            save_rectangular_roi(self._info.path, roi)
+        self.rectangularRoiPlaced.emit(roi)

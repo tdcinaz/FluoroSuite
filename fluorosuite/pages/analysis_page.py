@@ -12,9 +12,11 @@ import pyqtgraph as pg
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, QTimer
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -29,6 +31,7 @@ from ..pipeline import (
     Circle,
     ROIParameters,
     ROIResidenceResult,
+    RectangleROI,
     TimingAlignmentResult,
     analyze_roi_residence_stream,
     detect_injection_timing,
@@ -47,8 +50,9 @@ from .recording_panel import RecordingPanel
 
 class _AnalysisSignals(QObject):
     finished = Signal(int, int, object)
+    partial = Signal(int, int, str, object)
     failed = Signal(int, int, object)
-    progress = Signal(int, int, float)
+    progress = Signal(int, int, str, float)
 
 
 class _AnalysisTask(QRunnable):
@@ -75,8 +79,13 @@ class _AnalysisTask(QRunnable):
             result = self._analyze_panel(
                 self.inputs,
                 self.parameters,
-                lambda value: self.signals.progress.emit(self.generation, self.panel_index, value),
+                lambda phase, value: self.signals.progress.emit(
+                    self.generation, self.panel_index, phase, value
+                ),
                 lambda: not self.cancelled,
+                lambda phase, result: self.signals.partial.emit(
+                    self.generation, self.panel_index, phase, result
+                ),
             )
         except Exception as error:  # pragma: no cover - defensive worker boundary
             self.signals.failed.emit(self.generation, self.panel_index, error)
@@ -86,37 +95,70 @@ class _AnalysisTask(QRunnable):
     @staticmethod
     def _snapshot_panel(
         panel: RecordingPanel,
-    ) -> tuple[RecordingReader, Circle, RecordingInfo | None, Visualization, DarkFieldCorrection | None] | None:
-        if panel.roi is None or panel._reader is None:
+    ) -> tuple[
+        RecordingReader,
+        Circle | None,
+        RectangleROI | None,
+        RecordingInfo | None,
+        Visualization,
+        DarkFieldCorrection | None,
+    ] | None:
+        if panel._reader is None or (panel.roi is None and panel.frame_view.rectangular_roi() is None):
             return None
-        return panel._reader, panel.roi, panel.info, panel._visualization, panel._correction
+        return (
+            panel._reader,
+            panel.roi,
+            panel.frame_view.rectangular_roi(),
+            panel.info,
+            panel._visualization,
+            panel._correction,
+        )
 
     @staticmethod
     def _analyze_panel(
-        inputs: tuple[RecordingReader, Circle, RecordingInfo | None, Visualization, DarkFieldCorrection | None] | None,
+        inputs: tuple[
+            RecordingReader,
+            Circle | None,
+            RectangleROI | None,
+            RecordingInfo | None,
+            Visualization,
+            DarkFieldCorrection | None,
+        ] | None,
         parameters: ROIParameters,
-        progress: Callable[[float], None],
+        progress: Callable[[str, float], None],
         should_continue: Callable[[], bool],
-    ) -> ROIResidenceResult | None:
+        partial: Callable[[str, ROIResidenceResult], None],
+    ) -> tuple[ROIResidenceResult | None, ROIResidenceResult | None] | None:
         if inputs is None:
             return None
-        reader, roi, info, visualization, correction = inputs
+        reader, circle, rectangle, info, visualization, correction = inputs
         fps = info.fps if info else 15.0
-        frames = reader.iter_frames()
-        if visualization.dark_field and correction is not None:
-            frames = (correction.apply(frame) for frame in frames)
-        result = analyze_roi_residence_stream(
-            frames,
-            roi,
-            parameters,
-            fps,
-            reader.frame_count,
-            progress,
-            should_continue,
-        )
-        if result.time.size == 0:
-            return None
-        return result
+        results: list[ROIResidenceResult | None] = []
+        for phase, roi in (("circle", circle), ("rectangle", rectangle)):
+            if roi is None:
+                results.append(None)
+                continue
+            frames = reader.iter_frames()
+            if visualization.dark_field and correction is not None:
+                frames = (correction.apply(frame) for frame in frames)
+            result = analyze_roi_residence_stream(
+                frames,
+                roi,
+                parameters,
+                fps,
+                reader.frame_count,
+                lambda value, roi_phase=phase: progress(roi_phase, value),
+                should_continue,
+            )
+            result = result if result.time.size else None
+            results.append(result)
+            if result is not None:
+                partial(phase, result)
+            if not should_continue():
+                break
+        while len(results) < 2:
+            results.append(None)
+        return results[0], results[1]
 
 
 class _TimingSignals(QObject):
@@ -165,7 +207,7 @@ class AnalysisPage(QWidget):
         self._compare = False
         self._analysis_generations = [0, 0]
         self._analysis_tasks: set[_AnalysisTask] = set()
-        self._published_results: dict[int, ROIResidenceResult | None] = {}
+        self._published_results: dict[int, tuple[ROIResidenceResult | None, ROIResidenceResult | None]] = {}
         self._timing_generations = [0, 0]
         self._timing_tasks: set[_TimingTask] = set()
         self._timing_results: dict[int, TimingAlignmentResult] = {}
@@ -205,6 +247,9 @@ class AnalysisPage(QWidget):
         for panel_index, panel in enumerate((self.panel_a, self.panel_b)):
             panel.roiPlaced.connect(
                 lambda roi, index=panel_index: self._on_roi_placed(index, roi)
+            )
+            panel.rectangularRoiPlaced.connect(
+                lambda roi, index=panel_index: self._on_parent_roi_placed(index, roi)
             )
             panel.recordingCleared.connect(lambda p=panel: self._on_panel_cleared(p))
         self.panel_a.recordingOpened.connect(self._on_panel_a_opened)
@@ -278,7 +323,10 @@ class AnalysisPage(QWidget):
         return row
 
     def _build_stage_controls(self, stage: StageDrawer, description: str) -> None:
-        hint = QLabel(description + "\n\nEnable the stage, then click the aneurysm to place the ROI.")
+        hint = QLabel(
+            description
+            + "\n\nLeft-click the aneurysm for the circular ROI. Right-click to place the center of the rectangular ROI, then drag to rotate."
+        )
         hint.setObjectName("subtleLabel")
         hint.setWordWrap(True)
         stage.content_layout.addWidget(hint)
@@ -286,6 +334,12 @@ class AnalysisPage(QWidget):
         self.radius_spin = QSpinBox()
         self.radius_spin.setRange(5, 400)
         self.radius_spin.setValue(70)
+        self.parent_width_spin = QSpinBox()
+        self.parent_width_spin.setRange(1, 1000)
+        self.parent_width_spin.setValue(120)
+        self.parent_height_spin = QSpinBox()
+        self.parent_height_spin.setRange(1, 1000)
+        self.parent_height_spin.setValue(40)
         self.baseline_spin = QSpinBox()
         self.baseline_spin.setRange(1, 200)
         self.baseline_spin.setValue(8)
@@ -306,10 +360,23 @@ class AnalysisPage(QWidget):
         self._add_param(grid, 3, "Smoothing window", self.smoothing_spin)
         stage.content_layout.addLayout(grid)
 
-        self.radius_spin.valueChanged.connect(self._on_radius_changed)
-        for widget in (self.baseline_spin, self.clearance_spin, self.smoothing_spin):
-            widget.valueChanged.connect(lambda _value: self._run_analysis())
+        parent_roi_box = QGroupBox("Parent artery ROI")
+        parent_roi_layout = QVBoxLayout(parent_roi_box)
+        parent_roi_layout.setContentsMargins(10, 12, 10, 10)
+        parent_grid = QGridLayout()
+        parent_grid.setHorizontalSpacing(10)
+        parent_grid.setVerticalSpacing(6)
+        self._add_param(parent_grid, 0, "Width (px)", self.parent_width_spin)
+        self._add_param(parent_grid, 1, "Height (px)", self.parent_height_spin)
+        parent_roi_layout.addLayout(parent_grid)
+        stage.content_layout.addWidget(parent_roi_box)
+        self.on_click_toggle = QCheckBox("On-Click")
+        self.on_click_toggle.toggled.connect(self._on_on_click_toggled)
+        stage.content_layout.addWidget(self.on_click_toggle, 0, Qt.AlignmentFlag.AlignLeft)
 
+        self.radius_spin.valueChanged.connect(self._on_radius_changed)
+        self.parent_width_spin.valueChanged.connect(self._on_parent_width_changed)
+        self.parent_height_spin.valueChanged.connect(self._on_parent_height_changed)
         stage.set_expanded(True)
 
     def _add_param(self, grid: QGridLayout, row: int, name: str, widget: QWidget) -> None:
@@ -372,6 +439,15 @@ class AnalysisPage(QWidget):
         self._curve_a = self.plot.plot(pen=pg.mkPen(TRACE_A, width=2.5), name="A")
         self._curve_b = self.plot.plot(pen=pg.mkPen(TRACE_B, width=2.5), name="B")
         layout.addWidget(self.plot, 1)
+
+        self.parent_plot = pg.PlotWidget()
+        self.parent_plot.setBackground("#0b1018")
+        self.parent_plot.setLabel("bottom", "Time", units="s")
+        self.parent_plot.setLabel("left", "Parent artery contrast")
+        self.parent_plot.showGrid(x=True, y=True, alpha=0.2)
+        self._parent_curve_a = self.parent_plot.plot(pen=pg.mkPen(TRACE_A, width=2.5), name="A")
+        self._parent_curve_b = self.parent_plot.plot(pen=pg.mkPen(TRACE_B, width=2.5), name="B")
+        layout.addWidget(self.parent_plot, 1)
         return panel
 
     # -- mode -----------------------------------------------------------------
@@ -384,16 +460,11 @@ class AnalysisPage(QWidget):
         self._publish_available_results()
         if compare:
             self._run_timing_alignment((1,))
-        if (
-            compare
-            and 1 not in self._published_results
-            and not any(task.panel_index == 1 and not task.cancelled for task in self._analysis_tasks)
-        ):
-            self._run_analysis((1,))
 
     def _apply_mode(self) -> None:
         self.panel_b.setVisible(self._compare)
         self._curve_b.setVisible(self._compare)
+        self._parent_curve_b.setVisible(self._compare)
         self._legend.setVisible(self._compare)
         self.single_button.setChecked(not self._compare)
         self.compare_button.setChecked(self._compare)
@@ -495,8 +566,9 @@ class AnalysisPage(QWidget):
             self._set_analysis_running(False)
         for panel in (self.panel_a, self.panel_b):
             panel.set_roi_editable(enabled)
+            panel.set_rectangular_roi_editable(enabled)
         if enabled:
-            self.stage.set_status("Click the aneurysm on each image to place the ROI.")
+            self.stage.set_status("Place the circular ROI with left-click, or right-click the parent artery center and drag to rotate the rectangle.")
         else:
             self.stage.set_status(None)
 
@@ -512,10 +584,33 @@ class AnalysisPage(QWidget):
     def _on_radius_changed(self, radius: int) -> None:
         for panel in (self.panel_a, self.panel_b):
             panel.set_roi_radius(radius)
-        self._run_analysis()
+
+    def _on_parent_width_changed(self, width: int) -> None:
+        for panel in (self.panel_a, self.panel_b):
+            panel.set_rectangular_roi_width(width)
+
+    def _on_parent_height_changed(self, height: int) -> None:
+        for panel in (self.panel_a, self.panel_b):
+            panel.set_rectangular_roi_height(height)
+
+    def _on_parent_roi_placed(self, panel_index: int, roi: RectangleROI) -> None:  # noqa: ARG002
+        self.parent_width_spin.blockSignals(True)
+        self.parent_height_spin.blockSignals(True)
+        self.parent_width_spin.setValue(roi.width)
+        self.parent_height_spin.setValue(roi.height)
+        self.parent_width_spin.blockSignals(False)
+        self.parent_height_spin.blockSignals(False)
+        if self.on_click_toggle.isChecked():
+            self._run_analysis((panel_index,))
+
+    def _on_on_click_toggled(self, enabled: bool) -> None:
+        if enabled:
+            self._run_analysis()
 
     def _on_roi_placed(self, panel_index: int, roi: Circle) -> None:  # noqa: ARG002
-        self._run_analysis((panel_index,))
+        self._published_results.pop(panel_index, None)
+        if self.on_click_toggle.isChecked():
+            self._run_analysis((panel_index,))
 
     def _on_visualization_changed(self, visualization: Visualization) -> None:
         for panel in (self.panel_a, self.panel_b):
@@ -540,7 +635,6 @@ class AnalysisPage(QWidget):
             self.visualization_panel.apply_window(level, width)
         self._sync_playback(reset=True)
         self._run_timing_alignment((0,))
-        self._run_analysis((0,))
 
     def _on_panel_b_opened(self, info: RecordingInfo) -> None:
         self._pause()
@@ -552,7 +646,6 @@ class AnalysisPage(QWidget):
         self._legend.getLabel(self._curve_b).setText(info.name)
         self._sync_playback(reset=True)
         self._run_timing_alignment((1,))
-        self._run_analysis((1,))
 
     def _on_panel_cleared(self, panel: RecordingPanel) -> None:
         panel_index = 0 if panel is self.panel_a else 1
@@ -679,8 +772,13 @@ class AnalysisPage(QWidget):
                     previous.cancelled = True
             if panel.roi is not None:
                 panel.frame_view.set_roi_processing(True)
+                panel.frame_view.set_rectangular_roi_processing(False)
+            elif panel.frame_view.rectangular_roi() is not None:
+                panel.frame_view.set_roi_processing(False)
+                panel.frame_view.set_rectangular_roi_processing(True)
             task = _AnalysisTask(generation, panel_index, panel, parameters)
             task.signals.finished.connect(self._on_analysis_completed)
+            task.signals.partial.connect(self._on_partial_analysis_completed)
             task.signals.progress.connect(self._on_analysis_progress)
             task.signals.failed.connect(self._analysis_failed)
             self._analysis_tasks.add(task)
@@ -690,7 +788,7 @@ class AnalysisPage(QWidget):
         self,
         generation: int,
         panel_index: int,
-        result: ROIResidenceResult | None,
+        result: tuple[ROIResidenceResult | None, ROIResidenceResult | None] | None,
     ) -> None:
         task = next(
             (
@@ -704,13 +802,43 @@ class AnalysisPage(QWidget):
             self._analysis_tasks.remove(task)
         if generation != self._analysis_generations[panel_index]:
             return
-        self._published_results[panel_index] = result
-        (self.panel_a, self.panel_b)[panel_index].frame_view.set_roi_processing(False)
+        self._published_results[panel_index] = result or (None, None)
+        frame_view = (self.panel_a, self.panel_b)[panel_index].frame_view
+        frame_view.set_roi_processing(False)
+        frame_view.set_rectangular_roi_processing(False)
+        frame_view.set_roi_analysis_complete(True)
+        frame_view.set_rectangular_roi_analysis_complete(True)
         self._set_analysis_running(any(not candidate.cancelled for candidate in self._analysis_tasks))
         self._publish_available_results()
 
+    def _on_partial_analysis_completed(
+        self,
+        generation: int,
+        panel_index: int,
+        phase: str,
+        result: ROIResidenceResult,
+    ) -> None:
+        if generation != self._analysis_generations[panel_index]:
+            return
+        previous = self._published_results.get(panel_index, (None, None))
+        if phase == "circle":
+            published = (result, previous[1])
+        else:
+            published = (previous[0], result)
+        self._published_results[panel_index] = published
+        frame_view = (self.panel_a, self.panel_b)[panel_index].frame_view
+        if phase == "circle":
+            frame_view.set_roi_processing(False)
+            frame_view.set_roi_analysis_complete(True)
+        else:
+            frame_view.set_rectangular_roi_processing(False)
+            frame_view.set_rectangular_roi_analysis_complete(True)
+        self._publish_available_results()
+
     def _publish_available_results(self) -> None:
-        def ready_result(panel_index: int) -> ROIResidenceResult | None:
+        def ready_result(
+            panel_index: int,
+        ) -> tuple[ROIResidenceResult | None, ROIResidenceResult | None] | None:
             if self.timing_stage.is_enabled() and panel_index not in self._timing_results:
                 return None
             return self._published_results.get(panel_index)
@@ -722,19 +850,30 @@ class AnalysisPage(QWidget):
 
     def _apply_analysis_results(
         self,
-        result_a: ROIResidenceResult | None,
-        result_b: ROIResidenceResult | None,
+        result_a: tuple[ROIResidenceResult | None, ROIResidenceResult | None] | None,
+        result_b: tuple[ROIResidenceResult | None, ROIResidenceResult | None] | None,
     ) -> None:
-        if result_a is not None:
-            self._set_aligned_curve(self._curve_a, 0, result_a)
+        circle_a, parent_a = result_a or (None, None)
+        circle_b, parent_b = result_b or (None, None)
+        if circle_a is not None:
+            self._set_aligned_curve(self._curve_a, 0, circle_a)
         else:
             self._curve_a.setData([], [])
-        if result_b is not None:
-            self._set_aligned_curve(self._curve_b, 1, result_b)
+        if circle_b is not None:
+            self._set_aligned_curve(self._curve_b, 1, circle_b)
         elif self._compare:
             self._curve_b.setData([], [])
 
-        self._update_cards(result_a, result_b)
+        if parent_a is not None:
+            self._set_aligned_curve(self._parent_curve_a, 0, parent_a)
+        else:
+            self._parent_curve_a.setData([], [])
+        if parent_b is not None:
+            self._set_aligned_curve(self._parent_curve_b, 1, parent_b)
+        elif self._compare:
+            self._parent_curve_b.setData([], [])
+
+        self._update_cards(circle_a, circle_b)
 
     def _set_aligned_curve(self, curve: object, panel_index: int, result: ROIResidenceResult) -> None:
         start_frame = self._alignment_start(panel_index)
@@ -755,14 +894,26 @@ class AnalysisPage(QWidget):
         if task is not None:
             self._analysis_tasks.remove(task)
         if generation == self._analysis_generations[panel_index]:
-            (self.panel_a, self.panel_b)[panel_index].frame_view.set_roi_processing(False)
+            frame_view = (self.panel_a, self.panel_b)[panel_index].frame_view
+            frame_view.set_roi_processing(False)
+            frame_view.set_rectangular_roi_processing(False)
+            frame_view.set_roi_analysis_complete(False)
+            frame_view.set_rectangular_roi_analysis_complete(False)
             self._set_analysis_running(any(not candidate.cancelled for candidate in self._analysis_tasks))
             self.stage.set_status(f"Analysis failed: {error}")
 
-    def _on_analysis_progress(self, generation: int, panel_index: int, progress: float) -> None:
+    def _on_analysis_progress(
+        self, generation: int, panel_index: int, phase: str, progress: float
+    ) -> None:
         if generation != self._analysis_generations[panel_index]:
             return
-        (self.panel_a, self.panel_b)[panel_index].frame_view.set_roi_processing(True, progress)
+        frame_view = (self.panel_a, self.panel_b)[panel_index].frame_view
+        if phase == "circle":
+            frame_view.set_roi_processing(True, progress)
+            frame_view.set_rectangular_roi_processing(False)
+        else:
+            frame_view.set_roi_processing(False)
+            frame_view.set_rectangular_roi_processing(True, progress)
 
     def _set_analysis_running(self, running: bool) -> None:
         self.run_button.setProperty("analysisRunning", running)
@@ -813,5 +964,10 @@ class AnalysisPage(QWidget):
     def _clear_results(self) -> None:
         self._curve_a.setData([], [])
         self._curve_b.setData([], [])
+        self._parent_curve_a.setData([], [])
+        self._parent_curve_b.setData([], [])
+        for panel in (self.panel_a, self.panel_b):
+            panel.frame_view.set_roi_analysis_complete(False)
+            panel.frame_view.set_rectangular_roi_analysis_complete(False)
         for card in (self.peak_card, self.time_to_peak_card, self.residence_card, self.baseline_card):
             card.set_value("--")

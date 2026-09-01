@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable
 
 import numpy as np
 
-from .models import Circle, ROIParameters, ROIResidenceResult, TimingAlignmentResult
+from .models import Circle, ROIParameters, ROIResidenceResult, RectangleROI, TimingAlignmentResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,16 +127,16 @@ def _stable_baseline_start(
 
 def analyze_roi_residence(
     frames: np.ndarray,
-    circle: Circle,
+    roi: Circle | RectangleROI,
     parameters: ROIParameters,
     fps: float,
 ) -> ROIResidenceResult:
-    """Measure contrast residence inside ``circle`` across a stack of raw frames.
+    """Measure contrast residence inside ``roi`` across a stack of raw frames.
 
     ``frames`` is a (count, rows, cols) uint16 array.
     """
     count = int(frames.shape[0])
-    mask = circle.mask((int(frames.shape[1]), int(frames.shape[2])))
+    mask = roi.mask((int(frames.shape[1]), int(frames.shape[2])))
     pixel_count = max(1, int(np.count_nonzero(mask)))
 
     roi_mean = np.empty(count, dtype=np.float32)
@@ -148,7 +148,7 @@ def analyze_roi_residence(
 
 def analyze_roi_residence_stream(
     frames: Iterable[np.ndarray],
-    circle: Circle,
+    roi: Circle | RectangleROI,
     parameters: ROIParameters,
     fps: float,
     total_frames: int = 0,
@@ -164,7 +164,7 @@ def analyze_roi_residence_stream(
         if should_continue is not None and not should_continue():
             break
         if mask is None:
-            mask = circle.mask((int(frame.shape[0]), int(frame.shape[1])))
+            mask = roi.mask((int(frame.shape[0]), int(frame.shape[1])))
             pixel_count = max(1, int(np.count_nonzero(mask)))
         roi_means.append(float(frame[mask].sum()) / pixel_count)
         if progress is not None and total_frames > 0:
