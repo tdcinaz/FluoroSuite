@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
-from fluorosuite.export import _playback_bounds, render_fluoroscopy_view
+from fluorosuite.export import _playback_bounds, export_live_trials, render_fluoroscopy_view
 from fluorosuite.recordings import RecordingInfo
 from fluorosuite.visualization import Visualization
 
@@ -55,6 +57,35 @@ class ExportRenderingTests(unittest.TestCase):
             recording = RecordingInfo(path=path, frames=300, started=None, ended=None)
 
             self.assertEqual(_playback_bounds(recording), (40, 201))
+
+    def test_export_live_trials_exports_recordings_concurrently(self) -> None:
+        recordings = [
+            RecordingInfo(Path(f"TF_trial-{index}.raw"), 10, None, None)
+            for index in range(2)
+        ]
+        started = threading.Barrier(2)
+        completed: list[Path] = []
+
+        def export_stub(recording, output_path, correction, **kwargs) -> None:  # noqa: ANN001, ARG001
+            started.wait(timeout=1)
+            completed.append(output_path)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_dir = Path(temporary_directory)
+            with (
+                patch("fluorosuite.export.list_recordings", return_value=recordings),
+                patch("fluorosuite.export.export_recording", side_effect=export_stub),
+            ):
+                exported = export_live_trials(
+                    Path("unused"),
+                    output_dir,
+                    correction=None,  # type: ignore[arg-type]
+                    workers=2,
+                )
+
+        expected = [output_dir / "TF_trial-0.mp4", output_dir / "TF_trial-1.mp4"]
+        self.assertEqual(exported, expected)
+        self.assertCountEqual(completed, expected)
 
 
 if __name__ == "__main__":

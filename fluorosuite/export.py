@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -142,13 +144,15 @@ def export_live_trials(
     window_width: int = WINDOW_WIDTH,
     window_level: int = WINDOW_LEVEL,
     ffmpeg: str = "ffmpeg",
+    workers: int | None = None,
 ) -> list[Path]:
-    """Export every ``TF_`` recording in ``source_dir`` and return outputs written."""
+    """Export every ``TF_`` recording in ``source_dir`` concurrently."""
     exported: list[Path] = []
     trials = [recording for recording in list_recordings(source_dir) if recording.path.stem.startswith("TF_")]
     if not trials:
         raise RuntimeError(f"No TF_ recordings found in {source_dir}")
 
+    pending: list[tuple[RecordingInfo, Path]] = []
     for index, recording in enumerate(trials, start=1):
         output_path = output_dir / f"{recording.path.stem}.mp4"
         if output_path.exists() and not overwrite:
@@ -156,15 +160,29 @@ def export_live_trials(
             continue
         start, end = _playback_bounds(recording)
         print(f"[{index}/{len(trials)}] Exporting {recording.name} ({end - start} frames)")
-        export_recording(
-            recording,
-            output_path,
-            correction,
-            window_width=window_width,
-            window_level=window_level,
-            ffmpeg=ffmpeg,
-        )
-        exported.append(output_path)
+        pending.append((recording, output_path))
+
+    if not pending:
+        return exported
+    worker_count = min(workers if workers is not None else min(4, os.cpu_count() or 1), len(pending))
+    if worker_count < 1:
+        raise ValueError("workers must be at least 1")
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [
+            executor.submit(
+                export_recording,
+                recording,
+                output_path,
+                correction,
+                window_width=window_width,
+                window_level=window_level,
+                ffmpeg=ffmpeg,
+            )
+            for recording, output_path in pending
+        ]
+        for future, (_recording, output_path) in zip(futures, pending, strict=True):
+            future.result()
+            exported.append(output_path)
     return exported
 
 
@@ -175,6 +193,7 @@ def main() -> None:
     parser.add_argument("--dark-field", type=Path, default=DARK_FIELD_FILE, help="Dark-field calibration .npz file")
     parser.add_argument("--overwrite", action="store_true", help="Replace existing MP4 files")
     parser.add_argument("--ffmpeg", default="ffmpeg", help="FFmpeg executable to run")
+    parser.add_argument("--workers", type=int, help="Number of recordings to export concurrently (default: up to 4)")
     arguments = parser.parse_args()
 
     correction = DarkFieldCorrection.load(arguments.dark_field)
@@ -187,6 +206,7 @@ def main() -> None:
         correction,
         overwrite=arguments.overwrite,
         ffmpeg=arguments.ffmpeg,
+        workers=arguments.workers,
     )
     print(f"Exported {len(exported)} video(s) to {arguments.output_dir}")
 
