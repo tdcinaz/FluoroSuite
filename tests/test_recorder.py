@@ -36,6 +36,7 @@ class RecorderTests(unittest.TestCase):
             metadata = json.loads(raw_path.with_suffix(".json").read_text())
             self.assertEqual(raw_path.stat().st_size, 16 * PIXEL_BYTES)
             self.assertEqual(metadata["frames"], 16)
+            self.assertEqual(metadata["data_file"], raw_path.with_suffix(".csv").name)
 
 
 if __name__ == "__main__":

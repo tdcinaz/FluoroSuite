@@ -9,6 +9,7 @@ from .models import Circle, ROIParameters, ROIResidenceResult, StageInstance, Ti
 from .stages import (
     STAGE_REGISTRY,
     StageDefinition,
+    analyze_roi_means,
     analyze_roi_residence,
     analyze_roi_residence_stream,
     detect_injection_timing,
@@ -22,6 +23,7 @@ __all__ = [
     "TimingAlignmentResult",
     "STAGE_REGISTRY",
     "StageDefinition",
+    "analyze_roi_means",
     "analyze_roi_residence",
     "analyze_roi_residence_stream",
     "detect_injection_timing",

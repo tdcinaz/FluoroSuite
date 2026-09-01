@@ -1,20 +1,85 @@
 from __future__ import annotations
 
+import csv
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
-from fluorosuite.pipeline import Circle, TimingAlignmentResult
+import numpy as np
+
+from fluorosuite.pipeline import (
+    Circle,
+    ROIParameters,
+    ROIResidenceResult,
+    TimingAlignmentResult,
+    analyze_roi_means,
+)
 from fluorosuite.recordings import (
+    load_saved_analysis_result,
     load_saved_roi,
     load_saved_timing_alignment,
+    save_analysis_result,
     save_roi,
     save_timing_alignment,
 )
 
 
 class RecordingAnalysisMetadataTests(unittest.TestCase):
+    def test_round_trips_analysis_csv_and_records_data_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            raw_path = Path(temporary_directory) / "recording.raw"
+            sidecar = raw_path.with_suffix(".json")
+            sidecar.write_text(json.dumps({"frames": 3, "started": 10.0}))
+            result = ROIResidenceResult(
+                time=np.array([0.0, 0.1, 0.2], dtype=np.float32),
+                roi_mean=np.array([100.0, 90.0, 95.0], dtype=np.float32),
+                contrast=np.array([0.0, 10.0, 5.0], dtype=np.float32),
+                baseline=100.0,
+                baseline_start_time=0.0,
+                peak_contrast=10.0,
+                time_to_peak=0.1,
+                onset_time=0.1,
+                clearance_time=0.2,
+                residence_time=0.1,
+            )
+
+            save_analysis_result(raw_path, result)
+
+            metadata = json.loads(sidecar.read_text())
+            self.assertEqual(metadata["frames"], 3)
+            self.assertEqual(metadata["data_file"], "recording.csv")
+            self.assertTrue(raw_path.with_suffix(".csv").exists())
+            with raw_path.with_suffix(".csv").open(newline="") as handle:
+                self.assertEqual(csv.reader(handle).__next__(), ["time_s", "roi_mean"])
+
+            parameters = ROIParameters(baseline_frames=2, clearance_fraction=0.5)
+            loaded = load_saved_analysis_result(raw_path, parameters)
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            expected = analyze_roi_means(result.roi_mean, parameters, fps=10.0, time=result.time)
+            np.testing.assert_array_equal(loaded.time, result.time)
+            np.testing.assert_array_equal(loaded.roi_mean, result.roi_mean)
+            np.testing.assert_array_equal(loaded.contrast, expected.contrast)
+            self.assertEqual(loaded.baseline, expected.baseline)
+            self.assertEqual(loaded.residence_time, expected.residence_time)
+
+            replacement = replace(
+                result,
+                time=result.time[:1],
+                roi_mean=result.roi_mean[:1],
+                contrast=result.contrast[:1],
+                baseline=50.0,
+            )
+            save_analysis_result(raw_path, replacement)
+            loaded = load_saved_analysis_result(raw_path, parameters)
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            self.assertEqual(loaded.time.size, 1)
+            self.assertEqual(loaded.baseline, float(replacement.roi_mean[0]))
+            self.assertNotEqual(loaded.baseline, replacement.baseline)
+
     def test_saves_analysis_data_without_replacing_recording_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             raw_path = Path(temporary_directory) / "recording.raw"

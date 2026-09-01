@@ -25,9 +25,12 @@ from ..pipeline import ROIParameters, ROIResidenceResult, analyze_roi_residence_
 from ..recordings import (
     RecordingInfo,
     RecordingReader,
+    analysis_data_path,
     list_recordings,
+    load_saved_analysis_result,
     load_saved_roi,
     load_saved_timing_alignment,
+    save_analysis_result,
 )
 
 _TRACE_COLORS = (
@@ -291,22 +294,35 @@ class PlottingPage(QWidget):
 
     def _cache_key(self, path: Path) -> tuple[object, ...]:
         sidecar = path.with_suffix(".json")
+        data_file = analysis_data_path(path)
         raw_stat = path.stat()
         sidecar_stat = sidecar.stat()
+        try:
+            data_stat = data_file.stat()
+            data_signature = (data_stat.st_size, data_stat.st_mtime_ns)
+        except OSError:
+            data_signature = None
         return (
             path.resolve(),
             raw_stat.st_size,
             raw_stat.st_mtime_ns,
             sidecar_stat.st_size,
             sidecar_stat.st_mtime_ns,
+            data_signature,
             self._parameters,
         )
 
     def _cached_result(self, path: Path) -> ROIResidenceResult | None:
         try:
-            return self._cache.get(self._cache_key(path))
+            cache_key = self._cache_key(path)
         except OSError:
             return None
+        result = self._cache.get(cache_key)
+        if result is None:
+            result = load_saved_analysis_result(path, self._parameters)
+            if result is not None:
+                self._cache[cache_key] = result
+        return result
 
     def _analysis_progress(self, path: Path, cache_key: tuple[object, ...], progress: float) -> None:
         task = self._tasks.get(path)
@@ -323,8 +339,14 @@ class PlottingPage(QWidget):
         task = self._tasks.get(path)
         if task is None or task.cache_key != cache_key:
             return
+        try:
+            save_analysis_result(path, result)
+            saved_cache_key = self._cache_key(path)
+        except OSError as error:
+            self._analysis_failed(path, cache_key, error)
+            return
         self._tasks.pop(path, None)
-        self._cache[cache_key] = result
+        self._cache[saved_cache_key] = result
         row = self._rows.get(path)
         if row is None:
             return

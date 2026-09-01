@@ -136,7 +136,7 @@ def analyze_roi_residence(
     for index in range(count):
         roi_mean[index] = float(frames[index][mask].sum()) / pixel_count
 
-    return _analyze_roi_means(roi_mean, parameters, fps)
+    return analyze_roi_means(roi_mean, parameters, fps)
 
 
 def analyze_roi_residence_stream(
@@ -165,18 +165,26 @@ def analyze_roi_residence_stream(
             if fraction >= next_update or fraction >= 1.0:
                 progress(min(1.0, fraction))
                 next_update += 0.01
-    return _analyze_roi_means(np.asarray(roi_means, dtype=np.float32), parameters, fps)
+    return analyze_roi_means(np.asarray(roi_means, dtype=np.float32), parameters, fps)
 
 
-def _analyze_roi_means(
+def analyze_roi_means(
     roi_mean: np.ndarray,
     parameters: ROIParameters,
     fps: float,
+    *,
+    time: np.ndarray | None = None,
 ) -> ROIResidenceResult:
+    """Calculate contrast and summary metrics from per-frame ROI means."""
     count = int(roi_mean.size)
 
     fps = max(1.0, float(fps))
-    time = np.arange(count, dtype=np.float32) / fps
+    if time is None:
+        time = np.arange(count, dtype=np.float32) / fps
+    else:
+        time = np.asarray(time, dtype=np.float32)
+        if time.size != count:
+            raise ValueError("time and ROI mean arrays must have equal lengths")
 
     baseline_frames = max(1, min(parameters.baseline_frames, count))
     baseline_start = _stable_baseline_start(roi_mean, baseline_frames, fps)
@@ -204,7 +212,7 @@ def _analyze_roi_means(
         roi_mean=roi_mean,
         contrast=contrast,
         baseline=baseline,
-        baseline_start_time=baseline_start / fps,
+        baseline_start_time=float(time[baseline_start]) if count else 0.0,
         peak_contrast=peak_contrast,
         time_to_peak=time_to_peak,
         onset_time=onset_time,

@@ -6,6 +6,7 @@ concatenated 1024x1024 little-endian 16-bit frames with a JSON metadata sidecar.
 
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +14,10 @@ from pathlib import Path
 import numpy as np
 
 from .config import COLUMNS, PIXEL_BYTES, ROWS
-from .pipeline.models import Circle, TimingAlignmentResult
+from .pipeline.models import Circle, ROIParameters, ROIResidenceResult, TimingAlignmentResult
+from .pipeline.stages import analyze_roi_means
+
+_ANALYSIS_CSV_FIELDS = ("time_s", "roi_mean")
 
 
 def _read_sidecar(path: Path) -> dict:
@@ -25,17 +29,21 @@ def _read_sidecar(path: Path) -> dict:
     return metadata if isinstance(metadata, dict) else {}
 
 
-def _write_analysis_value(path: Path, key: str, value: dict) -> None:
+def _write_sidecar(path: Path, metadata: dict) -> None:
     sidecar = Path(path).with_suffix(".json")
+    temporary = sidecar.with_name(sidecar.name + ".tmp")
+    temporary.write_text(json.dumps(metadata, indent=2))
+    temporary.replace(sidecar)
+
+
+def _write_analysis_value(path: Path, key: str, value: dict) -> None:
     metadata = _read_sidecar(path)
     analysis = metadata.get("analysis")
     if not isinstance(analysis, dict):
         analysis = {}
         metadata["analysis"] = analysis
     analysis[key] = value
-    temporary = sidecar.with_name(sidecar.name + ".tmp")
-    temporary.write_text(json.dumps(metadata, indent=2))
-    temporary.replace(sidecar)
+    _write_sidecar(path, metadata)
 
 
 def _read_analysis_value(path: Path, key: str) -> object:
@@ -89,6 +97,57 @@ def save_timing_alignment(path: Path, result: TimingAlignmentResult) -> None:
             "fps": result.fps,
         },
     )
+
+
+def analysis_data_path(path: Path) -> Path:
+    path = Path(path)
+    data_file = _read_sidecar(path).get("data_file")
+    if isinstance(data_file, str) and data_file and Path(data_file).name == data_file:
+        return path.parent / data_file
+    return path.with_suffix(".csv")
+
+
+def load_saved_analysis_result(
+    path: Path,
+    parameters: ROIParameters,
+) -> ROIResidenceResult | None:
+    try:
+        with analysis_data_path(path).open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        if not rows:
+            return None
+        time = np.asarray([float(row["time_s"]) for row in rows], dtype=np.float32)
+        roi_mean = np.asarray([float(row["roi_mean"]) for row in rows], dtype=np.float32)
+        if time.size > 1:
+            intervals = np.diff(time.astype(np.float64))
+            if not np.all(np.isfinite(intervals)) or np.any(intervals <= 0):
+                raise ValueError("analysis time values must be finite and increasing")
+            fps = 1.0 / float(np.median(intervals))
+        else:
+            timing = load_saved_timing_alignment(path)
+            fps = timing.fps if timing is not None else 15.0
+        return analyze_roi_means(roi_mean, parameters, fps, time=time)
+    except (OSError, csv.Error, KeyError, TypeError, ValueError):
+        return None
+
+
+def save_analysis_result(path: Path, result: ROIResidenceResult) -> None:
+    if result.time.size != result.roi_mean.size:
+        raise ValueError("analysis time and ROI mean arrays must have equal lengths")
+
+    path = Path(path)
+    data_path = path.with_suffix(".csv")
+    temporary = data_path.with_name(data_path.name + ".tmp")
+    with temporary.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(_ANALYSIS_CSV_FIELDS)
+        for time, roi_mean in zip(result.time, result.roi_mean, strict=True):
+            writer.writerow((float(time), float(roi_mean)))
+    temporary.replace(data_path)
+
+    metadata = _read_sidecar(path)
+    metadata["data_file"] = data_path.name
+    _write_sidecar(path, metadata)
 
 
 @dataclass(frozen=True, slots=True)

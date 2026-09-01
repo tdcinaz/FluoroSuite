@@ -140,6 +140,7 @@ class Recorder:
         assert self.path is not None and self.meta_path is not None
         meta = {
             "file": self.path.name,
+            "data_file": self.path.with_suffix(".csv").name,
             "rows": ROWS,
             "columns": COLUMNS,
             "dtype": "<u2",

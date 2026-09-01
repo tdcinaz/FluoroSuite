@@ -37,7 +37,9 @@ from ..theme import TRACE_A, TRACE_B
 from ..recordings import (
     RecordingInfo,
     RecordingReader,
+    load_saved_analysis_result,
     load_saved_timing_alignment,
+    save_analysis_result,
     save_timing_alignment,
 )
 from ..visualization import DarkFieldCorrection, Visualization, auto_window
@@ -535,7 +537,7 @@ class AnalysisPage(QWidget):
             self.visualization_panel.apply_window(level, width)
         self._sync_playback(reset=True)
         self._run_timing_alignment((0,))
-        self._run_analysis((0,))
+        self._load_or_run_analysis(0)
 
     def _on_panel_b_opened(self, info: RecordingInfo) -> None:
         self._pause()
@@ -547,7 +549,7 @@ class AnalysisPage(QWidget):
         self._legend.getLabel(self._curve_b).setText(info.name)
         self._sync_playback(reset=True)
         self._run_timing_alignment((1,))
-        self._run_analysis((1,))
+        self._load_or_run_analysis(1)
 
     def _on_panel_cleared(self, panel: RecordingPanel) -> None:
         panel_index = 0 if panel is self.panel_a else 1
@@ -650,6 +652,26 @@ class AnalysisPage(QWidget):
         if generation == self._timing_generations[panel_index]:
             self.timing_stage.set_status(f"Timing alignment failed: {error}", is_error=True)
 
+    def _load_or_run_analysis(self, panel_index: int) -> None:
+        panel = (self.panel_a, self.panel_b)[panel_index]
+        result = (
+            load_saved_analysis_result(panel.info.path, self._parameters())
+            if panel.info is not None
+            else None
+        )
+        if result is None:
+            self._run_analysis((panel_index,))
+            return
+
+        self._analysis_generations[panel_index] += 1
+        for task in self._analysis_tasks:
+            if task.panel_index == panel_index:
+                task.cancelled = True
+        self._published_results[panel_index] = result
+        panel.frame_view.set_roi_processing(False)
+        self._set_analysis_running(any(not task.cancelled for task in self._analysis_tasks))
+        self._publish_available_results()
+
     def _run_analysis(self, panel_indices: tuple[int, ...] | None = None) -> None:
         if not self.stage.is_enabled():
             return
@@ -700,7 +722,10 @@ class AnalysisPage(QWidget):
         if generation != self._analysis_generations[panel_index]:
             return
         self._published_results[panel_index] = result
-        (self.panel_a, self.panel_b)[panel_index].frame_view.set_roi_processing(False)
+        panel = (self.panel_a, self.panel_b)[panel_index]
+        if result is not None and panel.info is not None:
+            save_analysis_result(panel.info.path, result)
+        panel.frame_view.set_roi_processing(False)
         self._set_analysis_running(any(not candidate.cancelled for candidate in self._analysis_tasks))
         self._publish_available_results()
 

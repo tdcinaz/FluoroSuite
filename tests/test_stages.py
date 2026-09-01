@@ -5,14 +5,14 @@ import unittest
 import numpy as np
 
 from fluorosuite.pipeline.models import ROIParameters
-from fluorosuite.pipeline.stages import _analyze_roi_means, detect_injection_timing
+from fluorosuite.pipeline.stages import analyze_roi_means, detect_injection_timing
 
 
 class ROIResidenceTests(unittest.TestCase):
     def test_returns_raw_contrast_without_smoothing(self) -> None:
         roi_mean = np.array([100.0, 100.0, 90.0, 100.0, 80.0], dtype=np.float32)
 
-        result = _analyze_roi_means(roi_mean, ROIParameters(baseline_frames=2), fps=30.0)
+        result = analyze_roi_means(roi_mean, ROIParameters(baseline_frames=2), fps=30.0)
 
         np.testing.assert_array_equal(result.contrast, result.baseline - roi_mean)
 
@@ -22,7 +22,7 @@ class ROIResidenceTests(unittest.TestCase):
         contrast = np.linspace(120.0, 80.0, 90, dtype=np.float32)
         roi_mean = np.concatenate((ramp, plateau, contrast))
 
-        result = _analyze_roi_means(roi_mean, ROIParameters(baseline_frames=8), fps=30.0)
+        result = analyze_roi_means(roi_mean, ROIParameters(baseline_frames=8), fps=30.0)
 
         self.assertGreaterEqual(result.baseline_start_time, 3.0)
         self.assertLess(result.baseline_start_time, 7.0)
