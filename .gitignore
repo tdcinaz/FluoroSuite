@@ -6,3 +6,4 @@ captures/
 logs/
 .cache.json
 TODO.md
+.DS_Store
