@@ -3,8 +3,17 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QResizeEvent, QShowEvent
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, Signal
+from PySide6.QtGui import (
+    QColor,
+    QMouseEvent,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QResizeEvent,
+    QShowEvent,
+    QTransform,
+)
 from PySide6.QtWidgets import QComboBox, QSizePolicy, QWidget
 
 from ..pipeline.models import Circle
@@ -17,9 +26,16 @@ class FrameView(QWidget):
 
     roiPlaced = Signal(object)  # emits a Circle
 
-    def __init__(self, placeholder: str = "No frame", parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        placeholder: str = "No frame",
+        parent: QWidget | None = None,
+        *,
+        circular_mask: bool = False,
+    ) -> None:
         super().__init__(parent)
         self._frame: np.ndarray | None = None
+        self._circular_mask = circular_mask
         self._visualization = Visualization.default()
         self._lut = self._visualization.build_lut()
         self._qimage = None
@@ -114,7 +130,17 @@ class FrameView(QWidget):
 
         self._display_rect = self._fit_rect(self._qimage.width(), self._qimage.height())
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.save()
+        if self._circular_mask:
+            mask_path = QPainterPath()
+            mask_path.addEllipse(QRectF(self._display_rect))
+            painter.setClipPath(mask_path)
+        center = QRectF(self._display_rect).center()
+        painter.translate(center)
+        painter.rotate(self._visualization.rotation)
+        painter.translate(-center)
         painter.drawImage(self._display_rect, self._qimage)
+        painter.restore()
 
         if self._roi is not None and self._frame is not None:
             center = self._frame_to_display(QPoint(self._roi.center_x, self._roi.center_y))
@@ -158,9 +184,10 @@ class FrameView(QWidget):
     def _display_to_frame(self, point: QPoint) -> QPoint | None:
         if self._frame is None or self._display_rect.isEmpty() or not self._display_rect.contains(point):
             return None
+        display_point = self._rotation_transform().inverted()[0].map(QPointF(point))
         rows, cols = self._frame.shape
-        x_fraction = (point.x() - self._display_rect.left()) / max(1, self._display_rect.width())
-        y_fraction = (point.y() - self._display_rect.top()) / max(1, self._display_rect.height())
+        x_fraction = (display_point.x() - self._display_rect.left()) / max(1, self._display_rect.width())
+        y_fraction = (display_point.y() - self._display_rect.top()) / max(1, self._display_rect.height())
         x = round(min(1.0, max(0.0, x_fraction)) * (cols - 1))
         y = round(min(1.0, max(0.0, y_fraction)) * (rows - 1))
         return QPoint(x, y)
@@ -169,10 +196,19 @@ class FrameView(QWidget):
         rows, cols = self._frame.shape
         x_scale = self._display_rect.width() / max(1, cols)
         y_scale = self._display_rect.height() / max(1, rows)
-        return QPoint(
+        display_point = QPointF(
             round(self._display_rect.left() + point.x() * x_scale),
             round(self._display_rect.top() + point.y() * y_scale),
         )
+        return self._rotation_transform().map(display_point).toPoint()
+
+    def _rotation_transform(self) -> QTransform:
+        center = QRectF(self._display_rect).center()
+        transform = QTransform()
+        transform.translate(center.x(), center.y())
+        transform.rotate(self._visualization.rotation)
+        transform.translate(-center.x(), -center.y())
+        return transform
 
     # -- interaction ----------------------------------------------------------
     def mousePressEvent(self, event: QMouseEvent) -> None:

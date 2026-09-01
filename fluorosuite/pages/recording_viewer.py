@@ -8,7 +8,13 @@ import numpy as np
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QWidget
 
-from ..recordings import RecordingInfo, RecordingReader, list_recordings
+from ..recordings import (
+    RecordingInfo,
+    RecordingReader,
+    list_recordings,
+    load_saved_rotation,
+    save_rotation,
+)
 from ..visualization import DarkFieldCorrection, Visualization
 from ..widgets import FrameView, PlaybackBar, VisualizationPanel
 from ..widgets.recording_selector import RecordingSelector
@@ -31,11 +37,11 @@ class RecordingViewer(QWidget):
         self._info: RecordingInfo | None = None
         self._current_frame: np.ndarray | None = None
 
-        self.frame_view = FrameView("Select a recording")
+        self.frame_view = FrameView("Select a recording", circular_mask=True)
         self.recording_selector = RecordingSelector()
         self.frame_view.set_overlay_widget(self.recording_selector)
         self.playback_bar = PlaybackBar()
-        self.visualization_panel = VisualizationPanel()
+        self.visualization_panel = VisualizationPanel(show_rotation=True)
         self.visualization_panel.set_dark_field_available(correction is not None)
 
         self._play_timer = QTimer(self)
@@ -47,6 +53,7 @@ class RecordingViewer(QWidget):
         self.playback_bar.indexChanged.connect(self._on_scrub)
         self.playback_bar.speed.currentIndexChanged.connect(self._update_timer_interval)
         self.visualization_panel.changed.connect(self._on_visualization_changed)
+        self.visualization_panel.rotationChanged.connect(self._on_rotation_changed)
 
     def refresh_recordings(self) -> None:
         selected = self.recording_selector.currentData()
@@ -80,6 +87,10 @@ class RecordingViewer(QWidget):
         self._pause()
         self._info = info
         self._reader = RecordingReader(info.path)
+        rotation = load_saved_rotation(info.path)
+        self.visualization_panel.set_rotation(rotation)
+        self._visualization = self._visualization.with_rotation(rotation)
+        self.frame_view.set_visualization(self._visualization)
         self.playback_bar.set_frame_count(self._reader.frame_count)
         self._load_frame(0)
         self._on_recording_opened(info)
@@ -145,6 +156,10 @@ class RecordingViewer(QWidget):
         self._visualization = visualization
         self.frame_view.set_visualization(visualization)
         self._render_current()
+
+    def _on_rotation_changed(self, rotation: int) -> None:
+        if self._info is not None:
+            save_rotation(self._info.path, rotation)
 
     def frames_array(self) -> np.ndarray | None:
         if self._reader is None:

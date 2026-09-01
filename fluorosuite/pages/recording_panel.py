@@ -12,7 +12,15 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from ..pipeline import Circle
-from ..recordings import RecordingInfo, RecordingReader, list_recordings, load_saved_roi, save_roi
+from ..recordings import (
+    RecordingInfo,
+    RecordingReader,
+    list_recordings,
+    load_saved_roi,
+    load_saved_rotation,
+    save_roi,
+    save_rotation,
+)
 from ..visualization import DarkFieldCorrection, Visualization
 from ..widgets import FrameView
 from ..widgets.recording_selector import RecordingSelector
@@ -40,7 +48,7 @@ class RecordingPanel(QWidget):
         self._current_frame: np.ndarray | None = None
         self._roi: Circle | None = None
 
-        self.frame_view = FrameView("Select a recording")
+        self.frame_view = FrameView("Select a recording", circular_mask=True)
         self.recording_selector = RecordingSelector()
         self.frame_view.set_overlay_widget(self.recording_selector)
 
@@ -70,6 +78,10 @@ class RecordingPanel(QWidget):
         return self._roi
 
     @property
+    def rotation(self) -> int:
+        return self._visualization.rotation
+
+    @property
     def frame_count(self) -> int:
         return self._reader.frame_count if self._reader is not None else 0
 
@@ -95,6 +107,12 @@ class RecordingPanel(QWidget):
         self._visualization = visualization
         self.frame_view.set_visualization(visualization)
         self._render_current()
+
+    def set_rotation(self, rotation: int, *, save: bool = False) -> None:
+        self._visualization = self._visualization.with_rotation(rotation)
+        self.frame_view.set_visualization(self._visualization)
+        if save and self._info is not None:
+            save_rotation(self._info.path, self._visualization.rotation)
 
     def set_correction(self, correction: DarkFieldCorrection | None) -> None:
         self._correction = correction
@@ -156,6 +174,7 @@ class RecordingPanel(QWidget):
         self._info = info
         self._reader = RecordingReader(info.path)
         self._roi = load_saved_roi(info.path)
+        self.set_rotation(load_saved_rotation(info.path))
         self.frame_view.set_roi(self._roi)
         self.show_frame(0)
         self.recordingOpened.emit(info)

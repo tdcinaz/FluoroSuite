@@ -19,9 +19,11 @@ from fluorosuite.pipeline import (
 from fluorosuite.recordings import (
     load_saved_analysis_result,
     load_saved_roi,
+    load_saved_rotation,
     load_saved_timing_alignment,
     save_analysis_result,
     save_roi,
+    save_rotation,
     save_timing_alignment,
 )
 
@@ -105,6 +107,21 @@ class RecordingAnalysisMetadataTests(unittest.TestCase):
             save_roi(raw_path, Circle(40, 50, 60))
 
             self.assertEqual(load_saved_roi(raw_path), Circle(40, 50, 60))
+
+    def test_rotation_round_trips_and_preserves_recording_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            raw_path = Path(temporary_directory) / "recording.raw"
+            sidecar = raw_path.with_suffix(".json")
+            sidecar.write_text(json.dumps({"frames": 120, "started": 10.0}))
+
+            self.assertEqual(load_saved_rotation(raw_path), 0)
+            save_rotation(raw_path, 45)
+            save_rotation(raw_path, -30)
+
+            metadata = json.loads(sidecar.read_text())
+            self.assertEqual(metadata["frames"], 120)
+            self.assertEqual(metadata["analysis"]["rotation"], -30)
+            self.assertEqual(load_saved_rotation(raw_path), -30)
 
 
 if __name__ == "__main__":

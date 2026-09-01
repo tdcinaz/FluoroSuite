@@ -36,7 +36,7 @@ def _write_sidecar(path: Path, metadata: dict) -> None:
     temporary.replace(sidecar)
 
 
-def _write_analysis_value(path: Path, key: str, value: dict) -> None:
+def _write_analysis_value(path: Path, key: str, value: object) -> None:
     metadata = _read_sidecar(path)
     analysis = metadata.get("analysis")
     if not isinstance(analysis, dict):
@@ -71,6 +71,18 @@ def save_roi(path: Path, roi: Circle) -> None:
         "roi",
         {"center_x": roi.center_x, "center_y": roi.center_y, "radius": roi.radius},
     )
+
+
+def load_saved_rotation(path: Path) -> int:
+    try:
+        rotation = int(_read_analysis_value(path, "rotation"))
+    except (TypeError, ValueError):
+        return 0
+    return max(-180, min(180, rotation))
+
+
+def save_rotation(path: Path, rotation: int) -> None:
+    _write_analysis_value(path, "rotation", max(-180, min(180, int(rotation))))
 
 
 def load_saved_timing_alignment(path: Path) -> TimingAlignmentResult | None:

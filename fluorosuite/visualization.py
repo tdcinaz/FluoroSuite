@@ -22,6 +22,7 @@ class Visualization:
     width: int = MAX_VALUE
     brightness: int = 0
     contrast: float = 1.0
+    rotation: int = 0
     invert: bool = False
     dark_field: bool = True
 
@@ -31,6 +32,9 @@ class Visualization:
 
     def with_window(self, level: int, width: int) -> "Visualization":
         return replace(self, level=int(level), width=max(1, int(width)))
+
+    def with_rotation(self, rotation: int) -> "Visualization":
+        return replace(self, rotation=max(-180, min(180, int(rotation))))
 
     def build_lut(self) -> np.ndarray:
         """Return a uint8 lookup table indexed by 14-bit pixel value."""

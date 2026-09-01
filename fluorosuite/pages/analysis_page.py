@@ -249,9 +249,16 @@ class AnalysisPage(QWidget):
         self._build_stage_controls(self.stage, definition.description)
         layout.addWidget(self.stage)
 
-        self.visualization_panel = VisualizationPanel()
+        self.visualization_panel = VisualizationPanel(
+            show_rotation=True,
+            show_secondary_rotation=True,
+        )
         self.visualization_panel.set_dark_field_available(self.panel_a._correction is not None)
         self.visualization_panel.changed.connect(self._on_visualization_changed)
+        self.visualization_panel.rotationChanged.connect(self._on_rotation_changed)
+        self.visualization_panel.secondaryRotationChanged.connect(
+            self._on_secondary_rotation_changed
+        )
         layout.addWidget(self.visualization_panel)
         layout.addStretch(1)
         return drawer
@@ -391,6 +398,8 @@ class AnalysisPage(QWidget):
 
     def _apply_mode(self) -> None:
         self.panel_b.setVisible(self._compare)
+        self.visualization_panel.set_secondary_rotation(self.panel_b.rotation)
+        self.visualization_panel.set_comparison_rotation_visible(self._compare)
         self._curve_b.setVisible(self._compare)
         self._legend.setVisible(self._compare)
         self.single_button.setChecked(not self._compare)
@@ -516,7 +525,15 @@ class AnalysisPage(QWidget):
 
     def _on_visualization_changed(self, visualization: Visualization) -> None:
         for panel in (self.panel_a, self.panel_b):
-            panel.set_visualization(visualization)
+            panel.set_visualization(visualization.with_rotation(panel.rotation))
+
+    def _on_rotation_changed(self, rotation: int) -> None:
+        if self.panel_a.has_recording():
+            self.panel_a.set_rotation(rotation, save=True)
+
+    def _on_secondary_rotation_changed(self, rotation: int) -> None:
+        if self._compare and self.panel_b.has_recording():
+            self.panel_b.set_rotation(rotation, save=True)
 
     def set_correction(self, correction: DarkFieldCorrection | None) -> None:
         for panel in (self.panel_a, self.panel_b):
@@ -525,6 +542,7 @@ class AnalysisPage(QWidget):
 
     def _on_panel_a_opened(self, info: RecordingInfo) -> None:
         self._pause()
+        self.visualization_panel.set_rotation(self.panel_a.rotation)
         self._published_results.pop(0, None)
         self._invalidate_timing(0)
         self._restore_timing(0, info)
@@ -541,6 +559,7 @@ class AnalysisPage(QWidget):
 
     def _on_panel_b_opened(self, info: RecordingInfo) -> None:
         self._pause()
+        self.visualization_panel.set_secondary_rotation(self.panel_b.rotation)
         self._published_results.pop(1, None)
         self._invalidate_timing(1)
         self._restore_timing(1, info)
