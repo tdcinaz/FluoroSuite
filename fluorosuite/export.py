@@ -1,4 +1,4 @@
-"""Export corrected fluoroscopy recordings as shareable MP4 files."""
+"""Export corrected fluoroscopy recordings as shareable video files."""
 
 from __future__ import annotations
 
@@ -62,8 +62,9 @@ def export_recording(
     window_width: int = WINDOW_WIDTH,
     window_level: int = WINDOW_LEVEL,
     ffmpeg: str = "ffmpeg",
+    raw: bool = False,
 ) -> None:
-    """Write one trimmed, corrected recording as an H.264 MP4 at its captured frame rate."""
+    """Write one trimmed, corrected recording as compressed MP4 or raw 8-bit AVI."""
     executable = shutil.which(ffmpeg)
     if executable is None:
         raise RuntimeError(f"FFmpeg executable not found: {ffmpeg}")
@@ -77,6 +78,30 @@ def export_recording(
         dtype="<u2",
         mode="r",
         shape=(recording.frames, ROWS, COLUMNS),
+    )
+    encoder_options = (
+        ["-c:v", "rawvideo", "-pix_fmt", "gray"]
+        if raw
+        else [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-vf",
+            "format=yuvj420p",
+            "-pix_fmt",
+            "yuvj420p",
+            "-color_range",
+            "pc",
+            "-colorspace",
+            "bt709",
+            "-color_trc",
+            "iec61966-2-1",
+            "-color_primaries",
+            "bt709",
+        ]
     )
     command = [
         executable,
@@ -95,24 +120,7 @@ def export_recording(
         "-i",
         "pipe:0",
         "-an",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "18",
-        "-vf",
-        "format=yuvj420p",
-        "-pix_fmt",
-        "yuvj420p",
-        "-color_range",
-        "pc",
-        "-colorspace",
-        "bt709",
-        "-color_trc",
-        "iec61966-2-1",
-        "-color_primaries",
-        "bt709",
+        *encoder_options,
         str(output_path),
     ]
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -145,6 +153,7 @@ def export_live_trials(
     window_level: int = WINDOW_LEVEL,
     ffmpeg: str = "ffmpeg",
     workers: int | None = None,
+    raw: bool = False,
 ) -> list[Path]:
     """Export every ``TF_`` recording in ``source_dir`` concurrently."""
     exported: list[Path] = []
@@ -154,7 +163,8 @@ def export_live_trials(
 
     pending: list[tuple[RecordingInfo, Path]] = []
     for index, recording in enumerate(trials, start=1):
-        output_path = output_dir / f"{recording.path.stem}.mp4"
+        suffix = ".avi" if raw else ".mp4"
+        output_path = output_dir / f"{recording.path.stem}{suffix}"
         if output_path.exists() and not overwrite:
             print(f"[{index}/{len(trials)}] Skipping {output_path.name}; it already exists")
             continue
@@ -177,6 +187,7 @@ def export_live_trials(
                 window_width=window_width,
                 window_level=window_level,
                 ffmpeg=ffmpeg,
+                raw=raw,
             )
             for recording, output_path in pending
         ]
@@ -187,11 +198,12 @@ def export_live_trials(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Export corrected TF fluoroscopy trials as H.264 MP4 files")
+    parser = argparse.ArgumentParser(description="Export corrected TF fluoroscopy trials as video files")
     parser.add_argument("--source-dir", type=Path, default=LIVE_DIR, help="Directory containing recorded .raw files")
-    parser.add_argument("--output-dir", type=Path, default=EXPORT_DIR, help="Destination directory for MP4 files")
+    parser.add_argument("--output-dir", type=Path, default=EXPORT_DIR, help="Destination directory for video files")
     parser.add_argument("--dark-field", type=Path, default=DARK_FIELD_FILE, help="Dark-field calibration .npz file")
-    parser.add_argument("--overwrite", action="store_true", help="Replace existing MP4 files")
+    parser.add_argument("--overwrite", action="store_true", help="Replace existing video files")
+    parser.add_argument("--raw", action="store_true", help="Export uncompressed 8-bit grayscale AVI instead of MP4")
     parser.add_argument("--ffmpeg", default="ffmpeg", help="FFmpeg executable to run")
     parser.add_argument("--workers", type=int, help="Number of recordings to export concurrently (default: up to 4)")
     arguments = parser.parse_args()
@@ -207,6 +219,7 @@ def main() -> None:
         overwrite=arguments.overwrite,
         ffmpeg=arguments.ffmpeg,
         workers=arguments.workers,
+        raw=arguments.raw,
     )
     print(f"Exported {len(exported)} video(s) to {arguments.output_dir}")
 
