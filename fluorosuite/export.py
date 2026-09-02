@@ -8,12 +8,13 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QRectF
-from PySide6.QtGui import QImage, QPainter, QPainterPath
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPainterPath
 
 from .config import COLUMNS, DARK_FIELD_FILE, EXPORT_DIR, LIVE_DIR, ROWS
 from .recordings import (
@@ -27,7 +28,9 @@ from .visualization import DarkFieldCorrection, Visualization, render_gray, to_q
 
 WINDOW_WIDTH = 1700
 WINDOW_LEVEL = 800
+COMPARISON_TILE_SIZE = 320
 _RECORDING_STEM = re.compile(r"^.+_([^_]+)_(?:pre|post)_\d+$")
+_COMPARISON_TRIAL = re.compile(r"^(?P<variant>\d[A-Z])T(?P<trial>[123])$")
 
 
 def _trial_designator(path: Path) -> str:
@@ -35,6 +38,151 @@ def _trial_designator(path: Path) -> str:
     if match is None:
         raise ValueError(f"Cannot determine trial designator from {Path(path).name}")
     return match.group(1)
+
+
+def _ordered_comparison_videos(paths: list[Path]) -> list[tuple[str, Path]]:
+    columns: dict[str, dict[int, tuple[str, Path]]] = {}
+    for path in paths:
+        designator = _trial_designator(path)
+        match = _COMPARISON_TRIAL.fullmatch(designator)
+        if match is None:
+            raise ValueError(f"Invalid comparison trial designator: {designator}")
+        variant = match.group("variant")
+        trial = int(match.group("trial"))
+        trials = columns.setdefault(variant, {})
+        if trial in trials:
+            raise ValueError(f"Duplicate comparison trial: {designator}")
+        trials[trial] = (designator, Path(path))
+
+    for variant, trials in columns.items():
+        if set(trials) != {1, 2, 3}:
+            raise ValueError(f"Comparison column {variant} must contain trials T1, T2, and T3")
+
+    return [
+        columns[variant][trial]
+        for variant in sorted(columns, key=lambda item: int(item[0]))
+        for trial in (1, 2, 3)
+    ]
+
+
+def _write_comparison_labels(
+    videos: list[tuple[str, Path]],
+    output_path: Path,
+    tile_size: int,
+) -> None:
+    application = QGuiApplication.instance()
+    if application is None:
+        application = QGuiApplication([])
+    column_count = len(videos) // 3
+    labels = QImage(column_count * tile_size, 3 * tile_size, QImage.Format.Format_ARGB32)
+    labels.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(labels)
+    font = QFont()
+    font.setPixelSize(max(18, tile_size // 13))
+    font.setWeight(QFont.Weight.DemiBold)
+    painter.setFont(font)
+    painter.setPen(QColor(255, 255, 255))
+    metrics = painter.fontMetrics()
+    for index, (designator, _path) in enumerate(videos):
+        column, row = divmod(index, 3)
+        label_width = metrics.horizontalAdvance(designator) + 20
+        label_height = metrics.height() + 10
+        label_rect = QRectF(
+            column * tile_size + 10,
+            row * tile_size + 10,
+            label_width,
+            label_height,
+        )
+        painter.fillRect(label_rect, QColor(0, 0, 0, 170))
+        painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, designator)
+    painter.end()
+    if not labels.save(str(output_path)):
+        raise RuntimeError(f"Could not create comparison labels at {output_path}")
+
+
+def export_comparison_video(
+    video_paths: list[Path],
+    output_path: Path,
+    *,
+    overwrite: bool = False,
+    ffmpeg: str = "ffmpeg",
+    tile_size: int = COMPARISON_TILE_SIZE,
+) -> Path:
+    """Tile trial MP4s by device variant and overlay each trial designator."""
+    videos = _ordered_comparison_videos(video_paths)
+    if not videos:
+        raise ValueError("at least one comparison video is required")
+    if tile_size < 1:
+        raise ValueError("tile_size must be at least 1")
+    missing = [path.name for _designator, path in videos if not path.is_file()]
+    if missing:
+        raise RuntimeError(f"Comparison inputs do not exist: {', '.join(missing)}")
+
+    executable = shutil.which(ffmpeg)
+    if executable is None:
+        raise RuntimeError(f"FFmpeg executable not found: {ffmpeg}")
+    output_path = Path(output_path)
+    if output_path.exists() and not overwrite:
+        print(f"Skipping {output_path.name}; it already exists")
+        return output_path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        labels_path = Path(temporary_directory) / "comparison-labels.png"
+        _write_comparison_labels(videos, labels_path, tile_size)
+        inputs = [argument for _designator, path in videos for argument in ("-i", str(path))]
+        scaled = [
+            f"[{index}:v]scale={tile_size}:{tile_size}:flags=lanczos,setsar=1[tile{index}]"
+            for index in range(len(videos))
+        ]
+        layout = "|".join(
+            f"{column * tile_size}_{row * tile_size}"
+            for column in range(len(videos) // 3)
+            for row in range(3)
+        )
+        tiles = "".join(f"[tile{index}]" for index in range(len(videos)))
+        filter_graph = ";".join(
+            [
+                *scaled,
+                f"{tiles}xstack=inputs={len(videos)}:layout={layout}:shortest=1[grid]",
+                f"[grid][{len(videos)}:v]overlay=0:0:shortest=1,format=yuv420p[out]",
+            ]
+        )
+        command = [
+            executable,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            *inputs,
+            "-loop",
+            "1",
+            "-framerate",
+            "30",
+            "-i",
+            str(labels_path),
+            "-filter_complex",
+            filter_graph,
+            "-map",
+            "[out]",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            output_path.unlink(missing_ok=True)
+            raise RuntimeError(f"FFmpeg failed while exporting comparison video: {result.stderr.strip()}")
+    return output_path
 
 
 def export_aligned_analysis_csv(paths: list[Path], output_path: Path) -> None:
@@ -289,6 +437,19 @@ def main() -> None:
         raw=arguments.raw,
     )
     print(f"Exported {len(exported)} video(s) to {arguments.output_dir}")
+    if not arguments.raw:
+        comparison_inputs = [
+            arguments.output_dir / f"{recording.path.stem}.mp4"
+            for recording in list_recordings(arguments.source_dir)
+            if recording.path.stem.startswith("TF_")
+        ]
+        comparison_path = export_comparison_video(
+            comparison_inputs,
+            arguments.output_dir / "TF_comparison.mp4",
+            overwrite=arguments.overwrite,
+            ffmpeg=arguments.ffmpeg,
+        )
+        print(f"Comparison video: {comparison_path}")
 
 
 if __name__ == "__main__":

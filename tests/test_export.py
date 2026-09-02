@@ -11,17 +11,70 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from fluorosuite.export import (
+    _ordered_comparison_videos,
     _playback_bounds,
     export_aligned_analysis_csv,
     export_live_trials,
     export_recording,
     render_fluoroscopy_view,
+    export_comparison_video,
 )
 from fluorosuite.recordings import RecordingInfo
 from fluorosuite.visualization import Visualization
 
 
 class ExportRenderingTests(unittest.TestCase):
+    def test_orders_comparison_videos_by_variant_then_trial(self) -> None:
+        paths = [
+            Path("TF_3PT3_post_0.mp4"),
+            Path("TF_0CT2_pre_0.mp4"),
+            Path("TF_3PT1_post_0.mp4"),
+            Path("TF_0CT1_pre_0.mp4"),
+            Path("TF_3PT2_post_0.mp4"),
+            Path("TF_0CT3_pre_0.mp4"),
+        ]
+
+        ordered = _ordered_comparison_videos(paths)
+
+        self.assertEqual(
+            [designator for designator, _path in ordered],
+            ["0CT1", "0CT2", "0CT3", "3PT1", "3PT2", "3PT3"],
+        )
+
+    def test_export_comparison_video_builds_three_row_grid(self) -> None:
+        names = [
+            "TF_1YT3_post_0.mp4",
+            "TF_0CT1_pre_0.mp4",
+            "TF_1YT1_post_0.mp4",
+            "TF_0CT3_pre_0.mp4",
+            "TF_1YT2_post_0.mp4",
+            "TF_0CT2_pre_0.mp4",
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            paths = [directory / name for name in names]
+            for path in paths:
+                path.touch()
+            output_path = directory / "TF_comparison.mp4"
+            result = MagicMock(returncode=0, stderr="")
+            with (
+                patch("fluorosuite.export.shutil.which", return_value="/usr/bin/ffmpeg"),
+                patch("fluorosuite.export._write_comparison_labels") as write_labels,
+                patch("fluorosuite.export.subprocess.run", return_value=result) as run,
+            ):
+                exported = export_comparison_video(paths, output_path, tile_size=100)
+
+        self.assertEqual(exported, output_path)
+        ordered = write_labels.call_args.args[0]
+        self.assertEqual(
+            [designator for designator, _path in ordered],
+            ["0CT1", "0CT2", "0CT3", "1YT1", "1YT2", "1YT3"],
+        )
+        command = run.call_args.args[0]
+        filter_graph = command[command.index("-filter_complex") + 1]
+        self.assertIn("xstack=inputs=6:layout=0_0|0_100|0_200|100_0|100_100|100_200", filter_graph)
+        self.assertIn("[grid][6:v]overlay=0:0:shortest=1", filter_graph)
+
     def test_exports_aligned_analysis_with_shared_time_and_trial_headers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
