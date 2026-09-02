@@ -25,7 +25,7 @@ from .pipeline.models import (
 )
 from .pipeline.stages import analyze_roi_means
 
-_ANALYSIS_CSV_FIELDS = ("time_s", "roi_mean", "inlet_roi_mean")
+_ANALYSIS_CSV_FIELDS = ("time_s", "roi_mean", "inlet_mean")
 
 
 def _read_sidecar(path: Path) -> dict:
@@ -195,10 +195,10 @@ def load_saved_inlet_analysis_result(path: Path) -> InletROIResult | None:
     try:
         with analysis_data_path(path).open(newline="") as handle:
             rows = list(csv.DictReader(handle))
-        if not rows or not all(row.get("inlet_roi_mean") for row in rows):
+        if not rows or not all(row.get("inlet_mean") for row in rows):
             return None
         time = np.asarray([float(row["time_s"]) for row in rows], dtype=np.float32)
-        roi_mean = np.asarray([float(row["inlet_roi_mean"]) for row in rows], dtype=np.float32)
+        roi_mean = np.asarray([float(row["inlet_mean"]) for row in rows], dtype=np.float32)
         return InletROIResult(time=time, roi_mean=roi_mean)
     except (OSError, csv.Error, KeyError, TypeError, ValueError):
         return None
@@ -228,8 +228,8 @@ def save_analysis_results(
         writer.writerow(_ANALYSIS_CSV_FIELDS)
         for index, time_value in enumerate(time):
             roi_mean = float(result.roi_mean[index]) if result is not None else ""
-            inlet_roi_mean = float(inlet_result.roi_mean[index]) if inlet_result is not None else ""
-            writer.writerow((float(time_value), roi_mean, inlet_roi_mean))
+            inlet_mean = float(inlet_result.roi_mean[index]) if inlet_result is not None else ""
+            writer.writerow((float(time_value), roi_mean, inlet_mean))
     temporary.replace(data_path)
 
     metadata = _read_sidecar(path)

@@ -81,7 +81,7 @@ class RecordingAnalysisMetadataTests(unittest.TestCase):
             with raw_path.with_suffix(".csv").open(newline="") as handle:
                 self.assertEqual(
                     csv.reader(handle).__next__(),
-                    ["time_s", "roi_mean", "inlet_roi_mean"],
+                    ["time_s", "roi_mean", "inlet_mean"],
                 )
 
             parameters = ROIParameters(baseline_frames=2, clearance_fraction=0.5)

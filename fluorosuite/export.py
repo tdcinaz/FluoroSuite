@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import os
+import re
 import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -14,11 +16,76 @@ from PySide6.QtCore import QRectF
 from PySide6.QtGui import QImage, QPainter, QPainterPath
 
 from .config import COLUMNS, DARK_FIELD_FILE, EXPORT_DIR, LIVE_DIR, ROWS
-from .recordings import RecordingInfo, list_recordings, load_saved_rotation, load_saved_timing_alignment
+from .recordings import (
+    RecordingInfo,
+    analysis_data_path,
+    list_recordings,
+    load_saved_rotation,
+    load_saved_timing_alignment,
+)
 from .visualization import DarkFieldCorrection, Visualization, render_gray, to_qimage
 
 WINDOW_WIDTH = 1700
 WINDOW_LEVEL = 800
+_RECORDING_STEM = re.compile(r"^.+_([^_]+)_(?:pre|post)_\d+$")
+
+
+def _trial_designator(path: Path) -> str:
+    match = _RECORDING_STEM.fullmatch(Path(path).stem)
+    if match is None:
+        raise ValueError(f"Cannot determine trial designator from {Path(path).name}")
+    return match.group(1)
+
+
+def export_aligned_analysis_csv(paths: list[Path], output_path: Path) -> None:
+    """Export enabled analyses on one timeline beginning five seconds before injection."""
+    if not paths:
+        raise ValueError("at least one recording is required")
+
+    series: list[tuple[str, list[dict[str, str]]]] = []
+    frame_rate: float | None = None
+    for path in paths:
+        path = Path(path)
+        timing = load_saved_timing_alignment(path)
+        if timing is None or timing.injection_frame <= 0:
+            raise ValueError(f"{path.name} has no detected injection timing")
+        if frame_rate is None:
+            frame_rate = timing.fps
+        elif not np.isclose(timing.fps, frame_rate):
+            raise ValueError("enabled recordings do not share the same frame rate")
+
+        designator = _trial_designator(path)
+        if any(existing == designator for existing, _rows in series):
+            raise ValueError(f"duplicate trial designator: {designator}")
+        with analysis_data_path(path).open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        if not rows or not all(row.get("roi_mean") and row.get("inlet_mean") for row in rows):
+            raise ValueError(f"{path.name} has incomplete saved ROI analysis data")
+        start_frame = timing.injection_frame - round(5.0 * timing.fps)
+        if start_frame < 0:
+            raise ValueError(f"{path.name} has less than five seconds before injection")
+        series.append((designator, rows[start_frame:]))
+
+    assert frame_rate is not None
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_name(output_path.name + ".tmp")
+    headers = ["time_s"]
+    for designator, _rows in series:
+        headers.extend((f"{designator}_roi_mean", f"{designator}_inlet_mean"))
+    row_count = max(len(rows) for _designator, rows in series)
+    with temporary.open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(headers)
+        for index in range(row_count):
+            output_row: list[object] = [index / frame_rate]
+            for _designator, rows in series:
+                if index < len(rows):
+                    output_row.extend((rows[index]["roi_mean"], rows[index]["inlet_mean"]))
+                else:
+                    output_row.extend(("", ""))
+            writer.writerow(output_row)
+    temporary.replace(output_path)
 
 
 def _playback_bounds(recording: RecordingInfo) -> tuple[int, int]:

@@ -21,16 +21,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..pipeline import ROIParameters, ROIResidenceResult, analyze_roi_residence_stream
+from ..export import export_aligned_analysis_csv
+from ..pipeline import InletROIResult, ROIParameters, ROIResidenceResult, analyze_rois_stream
 from ..recordings import (
     RecordingInfo,
     RecordingReader,
     analysis_data_path,
     list_recordings,
     load_saved_analysis_result,
+    load_saved_inlet_analysis_result,
+    load_saved_inlet_roi,
     load_saved_roi,
     load_saved_timing_alignment,
-    save_analysis_result,
+    save_analysis_results,
 )
 
 _TRACE_COLORS = (
@@ -76,24 +79,47 @@ class _PlotAnalysisTask(QRunnable):
     def run(self) -> None:
         try:
             roi = load_saved_roi(self.path)
+            inlet_roi = load_saved_inlet_roi(self.path)
             timing = load_saved_timing_alignment(self.path)
-            if roi is None or timing is None:
+            if roi is None or inlet_roi is None or timing is None:
                 raise ValueError("ROI or timing metadata changed while analysis was running")
             reader = RecordingReader(self.path)
-            result = analyze_roi_residence_stream(
+            result, inlet_result = analyze_rois_stream(
                 reader.iter_frames(),
                 roi,
+                inlet_roi,
                 self.parameters,
                 timing.fps,
                 reader.frame_count,
                 lambda value: self.signals.progress.emit(self.path, self.cache_key, value),
             )
-            if result.time.size == 0:
+            if result is None or inlet_result is None or result.time.size == 0:
                 raise ValueError("recording contains no readable frames")
         except Exception as error:  # pragma: no cover - defensive worker boundary
             self.signals.failed.emit(self.path, self.cache_key, error)
             return
-        self.signals.finished.emit(self.path, self.cache_key, result)
+        self.signals.finished.emit(self.path, self.cache_key, (result, inlet_result))
+
+
+class _PlotDataExportSignals(QObject):
+    finished = Signal(object)
+    failed = Signal(object)
+
+
+class _PlotDataExportTask(QRunnable):
+    def __init__(self, paths: list[Path], output_path: Path) -> None:
+        super().__init__()
+        self.paths = paths
+        self.output_path = output_path
+        self.signals = _PlotDataExportSignals()
+
+    def run(self) -> None:
+        try:
+            export_aligned_analysis_csv(self.paths, self.output_path)
+        except Exception as error:  # pragma: no cover - defensive worker boundary
+            self.signals.failed.emit(error)
+            return
+        self.signals.finished.emit(self.output_path)
 
 
 class PlottingPage(QWidget):
@@ -107,6 +133,7 @@ class PlottingPage(QWidget):
         self._curves: dict[Path, pg.PlotDataItem] = {}
         self._cache: dict[tuple[object, ...], ROIResidenceResult] = {}
         self._tasks: dict[Path, _PlotAnalysisTask] = {}
+        self._export_task: _PlotDataExportTask | None = None
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(4)
 
@@ -161,6 +188,12 @@ class PlottingPage(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setWidget(self.recording_list)
         layout.addWidget(scroll, 1)
+
+        self.export_button = QPushButton("Export data...")
+        self.export_button.setObjectName("primaryButton")
+        self.export_button.setEnabled(False)
+        self.export_button.clicked.connect(self._export_data)
+        layout.addWidget(self.export_button)
 
         self.status_label = QLabel("Select recordings to add them to the plot.")
         self.status_label.setObjectName("subtleLabel")
@@ -225,7 +258,7 @@ class PlottingPage(QWidget):
             row = _RecordingRow(info, checkbox, status)
             self._rows[info.path] = row
             checkbox.toggled.connect(
-                lambda visible, path=info.path: self._set_recording_visible(path, visible)
+                lambda visible, path=info.path: self._recording_toggled(path, visible)
             )
             if info.path in visible_paths:
                 checkbox.setChecked(True)
@@ -234,6 +267,11 @@ class PlottingPage(QWidget):
             self.status_label.setText("Select recordings to add them to the plot.")
         else:
             self.status_label.setText("No .raw recordings were found in this folder.")
+        self._update_export_button()
+
+    def _recording_toggled(self, path: Path, visible: bool) -> None:
+        self._set_recording_visible(path, visible)
+        self._update_export_button()
 
     def _set_recording_visible(self, path: Path, visible: bool) -> None:
         row = self._rows.get(path)
@@ -281,6 +319,8 @@ class PlottingPage(QWidget):
     def _metadata_error(self, path: Path) -> str | None:
         if load_saved_roi(path) is None:
             return "Missing or invalid saved ROI"
+        if load_saved_inlet_roi(path) is None:
+            return "Missing or invalid saved inlet ROI"
         timing = load_saved_timing_alignment(path)
         if timing is None:
             return "Missing or invalid timing alignment"
@@ -320,8 +360,11 @@ class PlottingPage(QWidget):
         result = self._cache.get(cache_key)
         if result is None:
             result = load_saved_analysis_result(path, self._parameters)
-            if result is not None:
+            inlet_result = load_saved_inlet_analysis_result(path)
+            if result is not None and inlet_result is not None:
                 self._cache[cache_key] = result
+            else:
+                result = None
         return result
 
     def _analysis_progress(self, path: Path, cache_key: tuple[object, ...], progress: float) -> None:
@@ -334,19 +377,21 @@ class PlottingPage(QWidget):
         self,
         path: Path,
         cache_key: tuple[object, ...],
-        result: ROIResidenceResult,
+        results: tuple[ROIResidenceResult, InletROIResult],
     ) -> None:
         task = self._tasks.get(path)
         if task is None or task.cache_key != cache_key:
             return
+        result, inlet_result = results
         try:
-            save_analysis_result(path, result)
+            save_analysis_results(path, result, inlet_result)
             saved_cache_key = self._cache_key(path)
         except OSError as error:
             self._analysis_failed(path, cache_key, error)
             return
         self._tasks.pop(path, None)
         self._cache[saved_cache_key] = result
+        self._update_export_button()
         row = self._rows.get(path)
         if row is None:
             return
@@ -365,6 +410,7 @@ class PlottingPage(QWidget):
         row.checkbox.blockSignals(True)
         row.checkbox.setChecked(False)
         row.checkbox.blockSignals(False)
+        self._update_export_button()
         row.status.setObjectName("errorLabel")
         row.status.setText(f"Analysis failed: {error}")
         self.status_label.setObjectName("errorLabel")
@@ -390,6 +436,47 @@ class PlottingPage(QWidget):
         else:
             curve.setData(time, contrast)
             curve.setVisible(True)
+
+    def _update_export_button(self) -> None:
+        selected = [path for path, row in self._rows.items() if row.checkbox.isChecked()]
+        ready = bool(selected) and not any(path in self._tasks for path in selected)
+        self.export_button.setEnabled(ready and self._export_task is None)
+
+    def _export_data(self) -> None:
+        paths = [path for path, row in self._rows.items() if row.checkbox.isChecked()]
+        if not paths or any(path in self._tasks for path in paths):
+            return
+        selected, _filter = QFileDialog.getSaveFileName(
+            self,
+            "Export aligned ROI data",
+            str(self._directory / "aligned_roi_data.csv"),
+            "CSV files (*.csv)",
+        )
+        if not selected:
+            return
+        output_path = Path(selected)
+        if output_path.suffix.lower() != ".csv":
+            output_path = output_path.with_suffix(".csv")
+
+        task = _PlotDataExportTask(paths, output_path)
+        task.signals.finished.connect(self._data_export_finished)
+        task.signals.failed.connect(self._data_export_failed)
+        self._export_task = task
+        self._update_export_button()
+        self._set_normal_status(self.status_label, f"Exporting {len(paths)} recordings...")
+        self._pool.start(task)
+
+    def _data_export_finished(self, output_path: Path) -> None:
+        self._export_task = None
+        self._update_export_button()
+        self._set_normal_status(self.status_label, f"Exported {output_path.name}")
+
+    def _data_export_failed(self, error: object) -> None:
+        self._export_task = None
+        self._update_export_button()
+        self.status_label.setObjectName("errorLabel")
+        self.status_label.setText(f"Export failed: {error}")
+        self._refresh_style(self.status_label)
 
     def _set_normal_status(self, label: QLabel, text: str) -> None:
         label.setObjectName("subtleLabel")

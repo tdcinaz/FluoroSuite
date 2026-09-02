@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import tempfile
 import threading
@@ -9,12 +10,88 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from fluorosuite.export import _playback_bounds, export_live_trials, export_recording, render_fluoroscopy_view
+from fluorosuite.export import (
+    _playback_bounds,
+    export_aligned_analysis_csv,
+    export_live_trials,
+    export_recording,
+    render_fluoroscopy_view,
+)
 from fluorosuite.recordings import RecordingInfo
 from fluorosuite.visualization import Visualization
 
 
 class ExportRenderingTests(unittest.TestCase):
+    def test_exports_aligned_analysis_with_shared_time_and_trial_headers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            paths = [directory / "TF_1YT2_post_0.raw", directory / "TF_2HT1_post_0.raw"]
+            values = [
+                [(str(10 + index), str(20 + index)) for index in range(12)],
+                [(str(30 + index), str(40 + index)) for index in range(12)],
+            ]
+            for path, injection_frame, recording_values in zip(paths, (10, 11), values, strict=True):
+                path.with_suffix(".json").write_text(
+                    json.dumps(
+                        {
+                            "analysis": {
+                                "timing_alignment": {
+                                    "injection_frame": injection_frame,
+                                    "start_frame": injection_frame - 10,
+                                    "fps": 2.0,
+                                }
+                            }
+                        }
+                    )
+                )
+                with path.with_suffix(".csv").open("w", newline="") as handle:
+                    writer = csv.writer(handle)
+                    writer.writerow(("time_s", "roi_mean", "inlet_mean"))
+                    for index, (roi_mean, inlet_mean) in enumerate(recording_values):
+                        writer.writerow((index / 2.0, roi_mean, inlet_mean))
+
+            output_path = directory / "aligned.csv"
+            export_aligned_analysis_csv(paths, output_path)
+
+            with output_path.open(newline="") as handle:
+                rows = list(csv.reader(handle))
+            self.assertEqual(
+                rows[0],
+                [
+                    "time_s",
+                    "1YT2_roi_mean",
+                    "1YT2_inlet_mean",
+                    "2HT1_roi_mean",
+                    "2HT1_inlet_mean",
+                ],
+            )
+            self.assertEqual(rows[1], ["0.0", "10", "20", "31", "41"])
+            self.assertEqual(rows[11], ["5.0", "20", "30", "41", "51"])
+            self.assertEqual(rows[12], ["5.5", "21", "31", "", ""])
+
+    def test_rejects_incomplete_inlet_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "TF_1YT2_post_0.raw"
+            path.with_suffix(".json").write_text(
+                json.dumps(
+                    {
+                        "analysis": {
+                            "timing_alignment": {
+                                "injection_frame": 10,
+                                "start_frame": 0,
+                                "fps": 2.0,
+                            }
+                        }
+                    }
+                )
+            )
+            path.with_suffix(".csv").write_text(
+                "time_s,roi_mean,inlet_mean\n0.0,10.0,\n"
+            )
+
+            with self.assertRaisesRegex(ValueError, "incomplete saved ROI analysis data"):
+                export_aligned_analysis_csv([path], Path(temporary_directory) / "aligned.csv")
+
     def test_render_fluoroscopy_view_clips_frame_to_circular_viewport(self) -> None:
         frame = np.full((5, 5), 16383, dtype=np.uint16)
         lut = Visualization().build_lut()

@@ -35,7 +35,7 @@ uv run fluorosuite --stream-host 0.0.0.0 --stream-port 5802
 Each run is a flat file of concatenated 1024×1024 little-endian 16-bit (14-bit
 significant) frames, with a JSON sidecar describing geometry, frame count, and
 timing. The sidecar's `data_file` field names the corresponding CSV containing
-`time_s`, `roi_mean`, and `inlet_roi_mean`; contrast and summary metrics are
+`time_s`, `roi_mean`, and `inlet_mean`; contrast and summary metrics are
 calculated when the data is loaded. Recordings are written to `captures/live/`.
 
 ## Contrast residence
