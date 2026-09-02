@@ -30,6 +30,26 @@ endpoint on the workstation, matching the network topology). Override with:
 uv run fluorosuite --stream-host 0.0.0.0 --stream-port 5802
 ```
 
+## Video export
+
+Exported MP4 files use the first usable native H.264 encoder detected for the
+host: VideoToolbox on macOS, NVENC/QSV/AMF/Media Foundation on Windows, or
+NVENC/QSV/VAAPI/V4L2 M2M on Linux. Each candidate performs a short hardware
+encode probe before it is selected; `libx264` is used when no GPU backend works.
+Hardware bitrates scale with frame size and rate from 100 Mbps at 1024×1024 and
+30 fps to preserve the quality of the existing CRF 18 exports.
+
+```bash
+uv run fluorosuite-export --overwrite
+uv run fluorosuite-export --encoder software
+uv run fluorosuite-export --encoder videotoolbox
+```
+
+Use `--encoder` with `auto`, `software`, `videotoolbox`, `nvenc`, `qsv`, `amf`,
+`mediafoundation`, `vaapi`, or `v4l2m2m`. On Linux, set
+`FLUOROSUITE_VAAPI_DEVICE` when the desired render node is not the first
+`/dev/dri/renderD*` device.
+
 ## Recording format
 
 Each run is a flat file of concatenated 1024×1024 little-endian 16-bit (14-bit

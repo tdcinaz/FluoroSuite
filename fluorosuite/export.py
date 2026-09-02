@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import dataclass, replace
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -31,6 +33,213 @@ WINDOW_LEVEL = 800
 COMPARISON_TILE_SIZE = 320
 _RECORDING_STEM = re.compile(r"^.+_([^_]+)_(?:pre|post)_\d+$")
 _COMPARISON_TRIAL = re.compile(r"^(?P<variant>\d[A-Z])T(?P<trial>[123])$")
+
+
+@dataclass(frozen=True)
+class VideoEncoder:
+    name: str
+    codec: str
+    hardware: bool
+    frame_filter: str
+    pixel_format: str | None
+    input_options: tuple[str, ...] = ()
+    codec_options: tuple[str, ...] = ()
+
+
+_SOFTWARE_ENCODER = VideoEncoder(
+    name="software",
+    codec="libx264",
+    hardware=False,
+    frame_filter="format=yuvj420p",
+    pixel_format="yuvj420p",
+    codec_options=("-preset", "medium", "-crf", "18"),
+)
+_HARDWARE_ENCODERS = {
+    "videotoolbox": VideoEncoder(
+        "videotoolbox",
+        "h264_videotoolbox",
+        True,
+        "format=yuv420p",
+        "yuv420p",
+    ),
+    "nvenc": VideoEncoder(
+        "nvenc",
+        "h264_nvenc",
+        True,
+        "format=nv12",
+        "nv12",
+        codec_options=("-preset", "p5", "-tune", "hq", "-rc", "vbr"),
+    ),
+    "qsv": VideoEncoder(
+        "qsv",
+        "h264_qsv",
+        True,
+        "format=nv12",
+        "nv12",
+        codec_options=("-preset", "medium"),
+    ),
+    "amf": VideoEncoder(
+        "amf",
+        "h264_amf",
+        True,
+        "format=nv12",
+        "nv12",
+        codec_options=("-quality", "quality", "-rc", "vbr_peak"),
+    ),
+    "mediafoundation": VideoEncoder(
+        "mediafoundation",
+        "h264_mf",
+        True,
+        "format=nv12",
+        "nv12",
+        codec_options=("-hw_encoding", "1"),
+    ),
+    "vaapi": VideoEncoder(
+        "vaapi",
+        "h264_vaapi",
+        True,
+        "format=nv12,hwupload",
+        None,
+        codec_options=("-rc_mode", "VBR"),
+    ),
+    "v4l2m2m": VideoEncoder(
+        "v4l2m2m",
+        "h264_v4l2m2m",
+        True,
+        "format=yuv420p",
+        "yuv420p",
+    ),
+}
+ENCODER_CHOICES = ("auto", "software", *_HARDWARE_ENCODERS)
+
+
+def _encoder_order() -> tuple[str, ...]:
+    system = platform.system()
+    machine = platform.machine().lower()
+    if system == "Darwin":
+        return ("videotoolbox",)
+    if system == "Windows":
+        if machine in {"arm64", "aarch64"}:
+            return ("mediafoundation", "nvenc", "qsv", "amf")
+        return ("nvenc", "qsv", "amf", "mediafoundation")
+    if system == "Linux":
+        if machine in {"arm64", "aarch64", "armv7l"}:
+            return ("v4l2m2m", "nvenc", "vaapi", "qsv")
+        return ("nvenc", "qsv", "vaapi", "v4l2m2m")
+    return ()
+
+
+def _configured_encoder(name: str) -> VideoEncoder:
+    encoder = _HARDWARE_ENCODERS[name]
+    if name != "vaapi":
+        return encoder
+    device = os.environ.get("FLUOROSUITE_VAAPI_DEVICE")
+    if device is None:
+        render_devices = sorted(Path("/dev/dri").glob("renderD*"))
+        device = str(render_devices[0]) if render_devices else "/dev/dri/renderD128"
+    return replace(encoder, input_options=("-vaapi_device", device))
+
+
+def _hardware_bitrate(width: int, height: int, fps: float) -> int:
+    reference_pixels_per_second = 1024 * 1024 * 30
+    scaled = round(100_000_000 * width * height * fps / reference_pixels_per_second)
+    return max(20_000_000, scaled)
+
+
+def _video_encoder_options(
+    encoder: VideoEncoder,
+    width: int,
+    height: int,
+    fps: float,
+) -> list[str]:
+    options = ["-c:v", encoder.codec, *encoder.codec_options]
+    if encoder.hardware:
+        bitrate = _hardware_bitrate(width, height, fps)
+        options.extend(
+            (
+                "-b:v",
+                str(bitrate),
+                "-maxrate",
+                str(round(bitrate * 1.2)),
+                "-bufsize",
+                str(bitrate * 2),
+            )
+        )
+    if encoder.pixel_format is not None:
+        options.extend(("-pix_fmt", encoder.pixel_format))
+    options.extend(
+        (
+            "-color_range",
+            "pc",
+            "-colorspace",
+            "bt709",
+            "-color_trc",
+            "iec61966-2-1",
+            "-color_primaries",
+            "bt709",
+        )
+    )
+    return options
+
+
+def _ffmpeg_encoder_names(executable: str) -> set[str]:
+    result = subprocess.run(
+        [executable, "-hide_banner", "-encoders"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    return {
+        parts[1]
+        for line in result.stdout.splitlines()
+        if len(parts := line.split()) >= 2 and len(parts[0]) == 6 and parts[0].startswith("V")
+    }
+
+
+def _probe_video_encoder(executable: str, encoder: VideoEncoder) -> bool:
+    command = [
+        executable,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        *encoder.input_options,
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=black:s={COLUMNS}x{ROWS}:r=30",
+        "-frames:v",
+        "2",
+        "-an",
+        "-vf",
+        encoder.frame_filter,
+        *_video_encoder_options(encoder, COLUMNS, ROWS, 30.0),
+        "-f",
+        "null",
+        "-",
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    return result.returncode == 0
+
+
+def select_video_encoder(executable: str, requested: str = "auto") -> VideoEncoder:
+    """Select a usable native H.264 encoder, falling back to libx264 in auto mode."""
+    if requested == "software":
+        return _SOFTWARE_ENCODER
+    if requested not in ENCODER_CHOICES:
+        raise ValueError(f"Unknown video encoder: {requested}")
+
+    available = _ffmpeg_encoder_names(executable)
+    candidates = _encoder_order() if requested == "auto" else (requested,)
+    for name in candidates:
+        encoder = _configured_encoder(name)
+        if encoder.codec in available and _probe_video_encoder(executable, encoder):
+            return encoder
+
+    if requested != "auto":
+        raise RuntimeError(f"Requested FFmpeg encoder is unavailable: {requested}")
+    return _SOFTWARE_ENCODER
 
 
 def _trial_designator(path: Path) -> str:
@@ -107,6 +316,7 @@ def export_comparison_video(
     overwrite: bool = False,
     ffmpeg: str = "ffmpeg",
     tile_size: int = COMPARISON_TILE_SIZE,
+    encoder: str | VideoEncoder = "software",
 ) -> Path:
     """Tile trial MP4s by device variant and overlay each trial designator."""
     videos = _ordered_comparison_videos(video_paths)
@@ -126,6 +336,9 @@ def export_comparison_video(
         print(f"Skipping {output_path.name}; it already exists")
         return output_path
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    selected_encoder = (
+        encoder if isinstance(encoder, VideoEncoder) else select_video_encoder(executable, encoder)
+    )
 
     with tempfile.TemporaryDirectory() as temporary_directory:
         labels_path = Path(temporary_directory) / "comparison-labels.png"
@@ -135,9 +348,10 @@ def export_comparison_video(
             f"[{index}:v]scale={tile_size}:{tile_size}:flags=lanczos,setsar=1[tile{index}]"
             for index in range(len(videos))
         ]
+        column_count = len(videos) // 3
         layout = "|".join(
             f"{column * tile_size}_{row * tile_size}"
-            for column in range(len(videos) // 3)
+            for column in range(column_count)
             for row in range(3)
         )
         tiles = "".join(f"[tile{index}]" for index in range(len(videos)))
@@ -145,15 +359,21 @@ def export_comparison_video(
             [
                 *scaled,
                 f"{tiles}xstack=inputs={len(videos)}:layout={layout}:shortest=1[grid]",
-                f"[grid][{len(videos)}:v]overlay=0:0:shortest=1,format=yuv420p[out]",
+                (
+                    f"[grid][{len(videos)}:v]overlay=0:0:shortest=1,"
+                    f"{selected_encoder.frame_filter}[out]"
+                ),
             ]
         )
+        output_width = column_count * tile_size
+        output_height = 3 * tile_size
         command = [
             executable,
             "-hide_banner",
             "-loglevel",
             "error",
             "-y",
+            *selected_encoder.input_options,
             *inputs,
             "-loop",
             "1",
@@ -166,14 +386,7 @@ def export_comparison_video(
             "-map",
             "[out]",
             "-an",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "18",
-            "-pix_fmt",
-            "yuv420p",
+            *_video_encoder_options(selected_encoder, output_width, output_height, 30.0),
             "-movflags",
             "+faststart",
             str(output_path),
@@ -278,6 +491,7 @@ def export_recording(
     window_level: int = WINDOW_LEVEL,
     ffmpeg: str = "ffmpeg",
     raw: bool = False,
+    encoder: str | VideoEncoder = "software",
 ) -> None:
     """Write one trimmed, corrected recording as compressed MP4 or raw 8-bit AVI."""
     executable = shutil.which(ffmpeg)
@@ -294,36 +508,24 @@ def export_recording(
         mode="r",
         shape=(recording.frames, ROWS, COLUMNS),
     )
-    encoder_options = (
-        ["-c:v", "rawvideo", "-pix_fmt", "gray"]
-        if raw
-        else [
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "18",
-            "-vf",
-            "format=yuvj420p",
-            "-pix_fmt",
-            "yuvj420p",
-            "-color_range",
-            "pc",
-            "-colorspace",
-            "bt709",
-            "-color_trc",
-            "iec61966-2-1",
-            "-color_primaries",
-            "bt709",
-        ]
-    )
+    selected_encoder = None
+    if not raw:
+        selected_encoder = (
+            encoder if isinstance(encoder, VideoEncoder) else select_video_encoder(executable, encoder)
+        )
+    input_options = selected_encoder.input_options if selected_encoder is not None else ()
+    encoder_options = ["-c:v", "rawvideo", "-pix_fmt", "gray"] if raw else [
+        "-vf",
+        selected_encoder.frame_filter,
+        *_video_encoder_options(selected_encoder, COLUMNS, ROWS, recording.fps),
+    ]
     command = [
         executable,
         "-hide_banner",
         "-loglevel",
         "error",
         "-y",
+        *input_options,
         "-f",
         "rawvideo",
         "-pixel_format",
@@ -369,6 +571,7 @@ def export_live_trials(
     ffmpeg: str = "ffmpeg",
     workers: int | None = None,
     raw: bool = False,
+    encoder: str | VideoEncoder = "software",
 ) -> list[Path]:
     """Export every ``TF_`` recording in ``source_dir`` concurrently."""
     exported: list[Path] = []
@@ -403,6 +606,7 @@ def export_live_trials(
                 window_level=window_level,
                 ffmpeg=ffmpeg,
                 raw=raw,
+                encoder=encoder,
             )
             for recording, output_path in pending
         ]
@@ -420,12 +624,30 @@ def main() -> None:
     parser.add_argument("--overwrite", action="store_true", help="Replace existing video files")
     parser.add_argument("--raw", action="store_true", help="Export uncompressed 8-bit grayscale AVI instead of MP4")
     parser.add_argument("--ffmpeg", default="ffmpeg", help="FFmpeg executable to run")
+    parser.add_argument(
+        "--encoder",
+        choices=ENCODER_CHOICES,
+        default="auto",
+        help="H.264 encoder backend (default: auto-detect GPU acceleration)",
+    )
     parser.add_argument("--workers", type=int, help="Number of recordings to export concurrently (default: up to 4)")
     arguments = parser.parse_args()
 
     correction = DarkFieldCorrection.load(arguments.dark_field)
     if correction is None:
         parser.error(f"Could not load dark-field calibration from {arguments.dark_field}")
+
+    executable = shutil.which(arguments.ffmpeg)
+    if executable is None:
+        parser.error(f"FFmpeg executable not found: {arguments.ffmpeg}")
+    try:
+        selected_encoder = _SOFTWARE_ENCODER if arguments.raw else select_video_encoder(
+            executable,
+            arguments.encoder,
+        )
+    except RuntimeError as error:
+        parser.error(str(error))
+    print(f"Video encoder: {'rawvideo' if arguments.raw else selected_encoder.codec}")
 
     exported = export_live_trials(
         arguments.source_dir,
@@ -435,6 +657,7 @@ def main() -> None:
         ffmpeg=arguments.ffmpeg,
         workers=arguments.workers,
         raw=arguments.raw,
+        encoder=selected_encoder,
     )
     print(f"Exported {len(exported)} video(s) to {arguments.output_dir}")
     if not arguments.raw:
@@ -448,6 +671,7 @@ def main() -> None:
             arguments.output_dir / "TF_comparison.mp4",
             overwrite=arguments.overwrite,
             ffmpeg=arguments.ffmpeg,
+            encoder=selected_encoder,
         )
         print(f"Comparison video: {comparison_path}")
 

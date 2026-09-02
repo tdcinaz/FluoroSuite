@@ -11,19 +11,50 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from fluorosuite.export import (
+    VideoEncoder,
     _ordered_comparison_videos,
     _playback_bounds,
     export_aligned_analysis_csv,
+    export_comparison_video,
     export_live_trials,
     export_recording,
     render_fluoroscopy_view,
-    export_comparison_video,
+    select_video_encoder,
 )
 from fluorosuite.recordings import RecordingInfo
 from fluorosuite.visualization import Visualization
 
 
 class ExportRenderingTests(unittest.TestCase):
+    def test_auto_encoder_uses_platform_hardware_after_successful_probe(self) -> None:
+        with (
+            patch("fluorosuite.export.platform.system", return_value="Darwin"),
+            patch("fluorosuite.export.platform.machine", return_value="arm64"),
+            patch(
+                "fluorosuite.export._ffmpeg_encoder_names",
+                return_value={"libx264", "h264_videotoolbox"},
+            ),
+            patch("fluorosuite.export._probe_video_encoder", return_value=True) as probe,
+        ):
+            encoder = select_video_encoder("/usr/bin/ffmpeg")
+
+        self.assertEqual(encoder.codec, "h264_videotoolbox")
+        probe.assert_called_once_with("/usr/bin/ffmpeg", encoder)
+
+    def test_auto_encoder_falls_back_when_hardware_probe_fails(self) -> None:
+        with (
+            patch("fluorosuite.export.platform.system", return_value="Linux"),
+            patch("fluorosuite.export.platform.machine", return_value="x86_64"),
+            patch(
+                "fluorosuite.export._ffmpeg_encoder_names",
+                return_value={"libx264", "h264_nvenc"},
+            ),
+            patch("fluorosuite.export._probe_video_encoder", return_value=False),
+        ):
+            encoder = select_video_encoder("/usr/bin/ffmpeg")
+
+        self.assertEqual(encoder.codec, "libx264")
+
     def test_orders_comparison_videos_by_variant_then_trial(self) -> None:
         paths = [
             Path("TF_3PT3_post_0.mp4"),
@@ -213,6 +244,37 @@ class ExportRenderingTests(unittest.TestCase):
         self.assertEqual(command[command.index("-pix_fmt") + 1], "yuvj420p")
         self.assertIn("-crf", command)
         process.stdin.write.assert_called_once_with(rendered.tobytes())
+
+    def test_export_recording_uses_high_bitrate_hardware_encoder(self) -> None:
+        recording = RecordingInfo(Path("trial.raw"), 1, None, None, frame_rate=30.0)
+        frame = np.zeros((2, 2), dtype=np.uint16)
+        correction = MagicMock()
+        correction.apply.return_value = frame
+        process = MagicMock()
+        process.stderr.read.return_value = b""
+        process.wait.return_value = 0
+        encoder = VideoEncoder(
+            "videotoolbox",
+            "h264_videotoolbox",
+            True,
+            "format=yuv420p",
+            "yuv420p",
+        )
+
+        with (
+            patch("fluorosuite.export.shutil.which", return_value="/usr/bin/ffmpeg"),
+            patch("fluorosuite.export.np.memmap", return_value=np.array([frame])),
+            patch("fluorosuite.export.load_saved_rotation", return_value=0),
+            patch("fluorosuite.export._playback_bounds", return_value=(0, 1)),
+            patch("fluorosuite.export.render_fluoroscopy_view", return_value=np.zeros((2, 2), dtype=np.uint8)),
+            patch("fluorosuite.export.subprocess.Popen", return_value=process) as popen,
+        ):
+            export_recording(recording, Path("trial.mp4"), correction, encoder=encoder)
+
+        command = popen.call_args.args[0]
+        self.assertEqual(command[command.index("-c:v") + 1], "h264_videotoolbox")
+        self.assertGreaterEqual(int(command[command.index("-b:v") + 1]), 100_000_000)
+        self.assertNotIn("-crf", command)
 
     def test_export_recording_raw_uses_uncompressed_8_bit_grayscale(self) -> None:
         recording = RecordingInfo(Path("trial.raw"), 1, None, None)
