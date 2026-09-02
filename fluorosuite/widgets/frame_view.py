@@ -10,14 +10,15 @@ from PySide6.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPolygonF,
     QResizeEvent,
     QShowEvent,
     QTransform,
 )
 from PySide6.QtWidgets import QComboBox, QSizePolicy, QWidget
 
-from ..pipeline.models import Circle
-from ..theme import ROI_COLOR
+from ..pipeline.models import Circle, Rectangle
+from ..theme import INLET_ROI_COLOR, ROI_COLOR
 from ..visualization import Visualization, to_qimage
 
 
@@ -25,6 +26,7 @@ class FrameView(QWidget):
     """Aspect-correct display for raw frames, with click-to-place ROI support."""
 
     roiPlaced = Signal(object)  # emits a Circle
+    inletRoiPlaced = Signal(object)  # emits a Rectangle
 
     def __init__(
         self,
@@ -44,8 +46,10 @@ class FrameView(QWidget):
         self._overlay_widget: QWidget | None = None
 
         self.roi_editable = False
+        self.inlet_roi_editable = False
         self.roi_radius = 70
         self._roi: Circle | None = None
+        self._inlet_roi: Rectangle | None = None
         self._roi_color = QColor(ROI_COLOR)
         self._roi_processing = False
         self._roi_progress = 0.0
@@ -106,6 +110,13 @@ class FrameView(QWidget):
     def roi(self) -> Circle | None:
         return self._roi
 
+    def set_inlet_roi(self, roi: Rectangle | None) -> None:
+        self._inlet_roi = roi
+        self.update()
+
+    def inlet_roi(self) -> Rectangle | None:
+        return self._inlet_roi
+
     def set_roi_radius(self, radius: int) -> None:
         self.roi_radius = max(1, int(radius))
         if self._roi is not None:
@@ -115,6 +126,14 @@ class FrameView(QWidget):
 
     def set_roi_editable(self, editable: bool) -> None:
         self.roi_editable = editable
+        self._update_roi_cursor()
+
+    def set_inlet_roi_editable(self, editable: bool) -> None:
+        self.inlet_roi_editable = editable
+        self._update_roi_cursor()
+
+    def _update_roi_cursor(self) -> None:
+        editable = self.roi_editable or self.inlet_roi_editable
         self.setCursor(Qt.CursorShape.CrossCursor if editable else Qt.CursorShape.ArrowCursor)
 
     # -- painting -------------------------------------------------------------
@@ -160,6 +179,21 @@ class FrameView(QWidget):
             painter.drawEllipse(center, radius, radius)
             painter.setPen(QColor("#f8fafc"))
             painter.drawText(center + QPoint(radius + 4, -radius), "ROI")
+
+        if self._inlet_roi is not None and self._frame is not None:
+            polygon = QPolygonF(
+                [
+                    QPointF(self._frame_to_display(QPoint(round(x), round(y))))
+                    for x, y in self._inlet_roi.corners()
+                ]
+            )
+            inlet_color = QColor(INLET_ROI_COLOR)
+            painter.setPen(QPen(inlet_color, 2))
+            painter.setBrush(QColor(inlet_color.red(), inlet_color.green(), inlet_color.blue(), 40))
+            painter.drawPolygon(polygon)
+            bounds = polygon.boundingRect()
+            painter.setPen(QColor("#f8fafc"))
+            painter.drawText(bounds.topRight() + QPointF(4, 12), "Inlet")
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -212,11 +246,23 @@ class FrameView(QWidget):
 
     # -- interaction ----------------------------------------------------------
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if not self.roi_editable or event.button() != Qt.MouseButton.LeftButton:
+        placing_aneurysm = self.roi_editable and event.button() == Qt.MouseButton.LeftButton
+        placing_inlet = self.inlet_roi_editable and event.button() == Qt.MouseButton.RightButton
+        if not placing_aneurysm and not placing_inlet:
             return
         frame_point = self._display_to_frame(event.position().toPoint())
         if frame_point is None:
             return
-        self._roi = Circle(frame_point.x(), frame_point.y(), self.roi_radius)
-        self.roiPlaced.emit(self._roi)
+        if placing_aneurysm:
+            self._roi = Circle(frame_point.x(), frame_point.y(), self.roi_radius)
+            self.roiPlaced.emit(self._roi)
+        else:
+            self._inlet_roi = Rectangle(
+                frame_point.x(),
+                frame_point.y(),
+                width=40,
+                height=120,
+                rotation=self._visualization.rotation,
+            )
+            self.inletRoiPlaced.emit(self._inlet_roi)
         self.update()

@@ -1,22 +1,28 @@
-"""Frontend-neutral pipeline contracts for the fluoroscopy suite.
+"""Frontend-neutral pipeline contracts for the fluoroscopy suite."""
 
-The design mirrors the legacy Contrast pipeline package but is streamlined to a
-single pipeline. For now the only registered stage places and analyzes an
-aneurysm ROI circle, but the registry keeps the app open to further stages.
-"""
-
-from .models import Circle, ROIParameters, ROIResidenceResult, StageInstance, TimingAlignmentResult
+from .models import (
+    Circle,
+    InletROIResult,
+    Rectangle,
+    ROIParameters,
+    ROIResidenceResult,
+    StageInstance,
+    TimingAlignmentResult,
+)
 from .stages import (
     STAGE_REGISTRY,
     StageDefinition,
     analyze_roi_means,
     analyze_roi_residence,
     analyze_roi_residence_stream,
+    analyze_rois_stream,
     detect_injection_timing,
 )
 
 __all__ = [
     "Circle",
+    "InletROIResult",
+    "Rectangle",
     "ROIParameters",
     "ROIResidenceResult",
     "StageInstance",
@@ -26,5 +32,6 @@ __all__ = [
     "analyze_roi_means",
     "analyze_roi_residence",
     "analyze_roi_residence_stream",
+    "analyze_rois_stream",
     "detect_injection_timing",
 ]

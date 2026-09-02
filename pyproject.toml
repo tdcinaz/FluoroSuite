@@ -1,7 +1,7 @@
 [project]
 name = "fluorosuite"
 version = "0.1.0"
-description = "Unified fluoroscopy suite: live capture, playback, and aneurysm ROI residence analysis"
+description = "Unified fluoroscopy suite for capture, playback, and aneurysm and inlet ROI analysis"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

@@ -14,10 +14,17 @@ from pathlib import Path
 import numpy as np
 
 from .config import COLUMNS, PIXEL_BYTES, ROWS
-from .pipeline.models import Circle, ROIParameters, ROIResidenceResult, TimingAlignmentResult
+from .pipeline.models import (
+    Circle,
+    InletROIResult,
+    Rectangle,
+    ROIParameters,
+    ROIResidenceResult,
+    TimingAlignmentResult,
+)
 from .pipeline.stages import analyze_roi_means
 
-_ANALYSIS_CSV_FIELDS = ("time_s", "roi_mean")
+_ANALYSIS_CSV_FIELDS = ("time_s", "roi_mean", "inlet_roi_mean")
 
 
 def _read_sidecar(path: Path) -> dict:
@@ -70,6 +77,36 @@ def save_roi(path: Path, roi: Circle) -> None:
         path,
         "roi",
         {"center_x": roi.center_x, "center_y": roi.center_y, "radius": roi.radius},
+    )
+
+
+def load_saved_inlet_roi(path: Path) -> Rectangle | None:
+    value = _read_analysis_value(path, "inlet_roi")
+    if not isinstance(value, dict):
+        return None
+    try:
+        return Rectangle(
+            center_x=int(value["center_x"]),
+            center_y=int(value["center_y"]),
+            width=max(1, int(value["width"])),
+            height=max(1, int(value["height"])),
+            rotation=max(-180, min(180, int(value["rotation"]))),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def save_inlet_roi(path: Path, roi: Rectangle) -> None:
+    _write_analysis_value(
+        path,
+        "inlet_roi",
+        {
+            "center_x": roi.center_x,
+            "center_y": roi.center_y,
+            "width": roi.width,
+            "height": roi.height,
+            "rotation": roi.rotation,
+        },
     )
 
 
@@ -143,9 +180,34 @@ def load_saved_analysis_result(
         return None
 
 
-def save_analysis_result(path: Path, result: ROIResidenceResult) -> None:
-    if result.time.size != result.roi_mean.size:
-        raise ValueError("analysis time and ROI mean arrays must have equal lengths")
+def load_saved_inlet_analysis_result(path: Path) -> InletROIResult | None:
+    try:
+        with analysis_data_path(path).open(newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        if not rows or not all(row.get("inlet_roi_mean") for row in rows):
+            return None
+        time = np.asarray([float(row["time_s"]) for row in rows], dtype=np.float32)
+        roi_mean = np.asarray([float(row["inlet_roi_mean"]) for row in rows], dtype=np.float32)
+        return InletROIResult(time=time, roi_mean=roi_mean)
+    except (OSError, csv.Error, KeyError, TypeError, ValueError):
+        return None
+
+
+def save_analysis_results(
+    path: Path,
+    result: ROIResidenceResult | None,
+    inlet_result: InletROIResult | None,
+) -> None:
+    if result is None and inlet_result is None:
+        raise ValueError("at least one analysis result is required")
+    for item in (result, inlet_result):
+        if item is not None and item.time.size != item.roi_mean.size:
+            raise ValueError("analysis time and ROI mean arrays must have equal lengths")
+    if result is not None and inlet_result is not None and not np.array_equal(result.time, inlet_result.time):
+        raise ValueError("aneurysm and inlet analysis times must match")
+
+    time = result.time if result is not None else inlet_result.time
+    assert time is not None
 
     path = Path(path)
     data_path = path.with_suffix(".csv")
@@ -153,13 +215,22 @@ def save_analysis_result(path: Path, result: ROIResidenceResult) -> None:
     with temporary.open("w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(_ANALYSIS_CSV_FIELDS)
-        for time, roi_mean in zip(result.time, result.roi_mean, strict=True):
-            writer.writerow((float(time), float(roi_mean)))
+        for index, time_value in enumerate(time):
+            roi_mean = float(result.roi_mean[index]) if result is not None else ""
+            inlet_roi_mean = float(inlet_result.roi_mean[index]) if inlet_result is not None else ""
+            writer.writerow((float(time_value), roi_mean, inlet_roi_mean))
     temporary.replace(data_path)
 
     metadata = _read_sidecar(path)
     metadata["data_file"] = data_path.name
     _write_sidecar(path, metadata)
+
+
+def save_analysis_result(path: Path, result: ROIResidenceResult) -> None:
+    inlet_result = load_saved_inlet_analysis_result(path)
+    if inlet_result is not None and not np.array_equal(result.time, inlet_result.time):
+        inlet_result = None
+    save_analysis_results(path, result, inlet_result)
 
 
 @dataclass(frozen=True, slots=True)

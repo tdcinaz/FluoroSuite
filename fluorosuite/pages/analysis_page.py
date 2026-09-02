@@ -1,4 +1,4 @@
-"""Analysis page: place an aneurysm ROI circle and measure contrast residence.
+"""Analysis page for aneurysm contrast residence and inlet brightness.
 
 Supports a single recording or a two-video side-by-side comparison.
 """
@@ -27,10 +27,12 @@ from PySide6.QtWidgets import (
 from ..pipeline import (
     STAGE_REGISTRY,
     Circle,
+    InletROIResult,
+    Rectangle,
     ROIParameters,
     ROIResidenceResult,
     TimingAlignmentResult,
-    analyze_roi_residence_stream,
+    analyze_rois_stream,
     detect_injection_timing,
 )
 from ..theme import TRACE_A, TRACE_B
@@ -38,8 +40,9 @@ from ..recordings import (
     RecordingInfo,
     RecordingReader,
     load_saved_analysis_result,
+    load_saved_inlet_analysis_result,
     load_saved_timing_alignment,
-    save_analysis_result,
+    save_analysis_results,
     save_timing_alignment,
 )
 from ..visualization import DarkFieldCorrection, Visualization, auto_window
@@ -71,7 +74,7 @@ class _AnalysisTask(QRunnable):
 
     def run(self) -> None:
         if self.cancelled:
-            self.signals.finished.emit(self.generation, self.panel_index, None)
+            self.signals.finished.emit(self.generation, self.panel_index, (None, None))
             return
         try:
             result = self._analyze_panel(
@@ -88,37 +91,54 @@ class _AnalysisTask(QRunnable):
     @staticmethod
     def _snapshot_panel(
         panel: RecordingPanel,
-    ) -> tuple[RecordingReader, Circle, RecordingInfo | None, Visualization, DarkFieldCorrection | None] | None:
-        if panel.roi is None or panel._reader is None:
+    ) -> tuple[
+        RecordingReader,
+        Circle | None,
+        Rectangle | None,
+        RecordingInfo | None,
+        Visualization,
+        DarkFieldCorrection | None,
+    ] | None:
+        if (panel.roi is None and panel.inlet_roi is None) or panel._reader is None:
             return None
-        return panel._reader, panel.roi, panel.info, panel._visualization, panel._correction
+        return panel._reader, panel.roi, panel.inlet_roi, panel.info, panel._visualization, panel._correction
 
     @staticmethod
     def _analyze_panel(
-        inputs: tuple[RecordingReader, Circle, RecordingInfo | None, Visualization, DarkFieldCorrection | None] | None,
+        inputs: tuple[
+            RecordingReader,
+            Circle | None,
+            Rectangle | None,
+            RecordingInfo | None,
+            Visualization,
+            DarkFieldCorrection | None,
+        ] | None,
         parameters: ROIParameters,
         progress: Callable[[float], None],
         should_continue: Callable[[], bool],
-    ) -> ROIResidenceResult | None:
+    ) -> tuple[ROIResidenceResult | None, InletROIResult | None]:
         if inputs is None:
-            return None
-        reader, roi, info, visualization, correction = inputs
+            return None, None
+        reader, roi, inlet_roi, info, visualization, correction = inputs
         fps = info.fps if info else 15.0
         frames = reader.iter_frames()
         if visualization.dark_field and correction is not None:
             frames = (correction.apply(frame) for frame in frames)
-        result = analyze_roi_residence_stream(
+        result, inlet_result = analyze_rois_stream(
             frames,
             roi,
+            inlet_roi,
             parameters,
             fps,
             reader.frame_count,
             progress,
             should_continue,
         )
-        if result.time.size == 0:
-            return None
-        return result
+        if result is not None and result.time.size == 0:
+            result = None
+        if inlet_result is not None and inlet_result.time.size == 0:
+            inlet_result = None
+        return result, inlet_result
 
 
 class _TimingSignals(QObject):
@@ -168,6 +188,7 @@ class AnalysisPage(QWidget):
         self._analysis_generations = [0, 0]
         self._analysis_tasks: set[_AnalysisTask] = set()
         self._published_results: dict[int, ROIResidenceResult | None] = {}
+        self._published_inlet_results: dict[int, InletROIResult | None] = {}
         self._timing_generations = [0, 0]
         self._timing_tasks: set[_TimingTask] = set()
         self._timing_results: dict[int, TimingAlignmentResult] = {}
@@ -207,6 +228,9 @@ class AnalysisPage(QWidget):
         for panel_index, panel in enumerate((self.panel_a, self.panel_b)):
             panel.roiPlaced.connect(
                 lambda roi, index=panel_index: self._on_roi_placed(index, roi)
+            )
+            panel.inletRoiPlaced.connect(
+                lambda roi, index=panel_index: self._on_inlet_roi_placed(index, roi)
             )
             panel.recordingCleared.connect(lambda p=panel: self._on_panel_cleared(p))
         self.panel_a.recordingOpened.connect(self._on_panel_a_opened)
@@ -248,6 +272,19 @@ class AnalysisPage(QWidget):
         self.stage.enabledChanged.connect(self._on_stage_enabled)
         self._build_stage_controls(self.stage, definition.description)
         layout.addWidget(self.stage)
+
+        inlet_definition = STAGE_REGISTRY["inlet_roi_analysis"]
+        self.inlet_stage = StageDrawer(inlet_definition.display_name)
+        self.inlet_stage.enabledChanged.connect(self._on_inlet_stage_enabled)
+        inlet_hint = QLabel(
+            inlet_definition.description
+            + "\n\nEnable the stage, then right-click the inlet vessel to set the ROI center."
+        )
+        inlet_hint.setObjectName("subtleLabel")
+        inlet_hint.setWordWrap(True)
+        self.inlet_stage.content_layout.addWidget(inlet_hint)
+        self.inlet_stage.set_expanded(True)
+        layout.addWidget(self.inlet_stage)
 
         self.visualization_panel = VisualizationPanel(
             show_rotation=True,
@@ -517,6 +554,20 @@ class AnalysisPage(QWidget):
         else:
             self.stage.set_status(None)
 
+    def _on_inlet_stage_enabled(self, enabled: bool) -> None:
+        for task in self._analysis_tasks:
+            task.cancelled = True
+        self._analysis_generations[0] += 1
+        self._analysis_generations[1] += 1
+        if not enabled:
+            self._set_analysis_running(False)
+        for panel in (self.panel_a, self.panel_b):
+            panel.set_inlet_roi_editable(enabled)
+        if enabled:
+            self.inlet_stage.set_status("Right-click the inlet vessel on each image to place the ROI.")
+        else:
+            self.inlet_stage.set_status(None)
+
     def _on_timing_stage_enabled(self, enabled: bool) -> None:
         self._pause()
         if enabled:
@@ -532,6 +583,9 @@ class AnalysisPage(QWidget):
         self._run_analysis()
 
     def _on_roi_placed(self, panel_index: int, roi: Circle) -> None:  # noqa: ARG002
+        self._run_analysis((panel_index,))
+
+    def _on_inlet_roi_placed(self, panel_index: int, roi: Rectangle) -> None:  # noqa: ARG002
         self._run_analysis((panel_index,))
 
     def _on_visualization_changed(self, visualization: Visualization) -> None:
@@ -559,10 +613,13 @@ class AnalysisPage(QWidget):
         self._pause()
         self.visualization_panel.set_rotation(self.panel_a.rotation)
         self._published_results.pop(0, None)
+        self._published_inlet_results.pop(0, None)
         self._invalidate_timing(0)
         self._restore_timing(0, info)
         if self.panel_a.roi is not None:
             self.stage.enable_button.setChecked(True)
+        if self.panel_a.inlet_roi is not None:
+            self.inlet_stage.enable_button.setChecked(True)
         self._legend.getLabel(self._curve_a).setText(info.name)
         frame = self.panel_a.current_frame
         if frame is not None:
@@ -576,10 +633,13 @@ class AnalysisPage(QWidget):
         self._pause()
         self.visualization_panel.set_secondary_rotation(self.panel_b.rotation)
         self._published_results.pop(1, None)
+        self._published_inlet_results.pop(1, None)
         self._invalidate_timing(1)
         self._restore_timing(1, info)
         if self.panel_b.roi is not None:
             self.stage.enable_button.setChecked(True)
+        if self.panel_b.inlet_roi is not None:
+            self.inlet_stage.enable_button.setChecked(True)
         self._legend.getLabel(self._curve_b).setText(info.name)
         self._sync_playback(reset=True)
         self._run_timing_alignment((1,))
@@ -592,6 +652,7 @@ class AnalysisPage(QWidget):
             if task.panel_index == panel_index:
                 task.cancelled = True
         self._published_results.pop(panel_index, None)
+        self._published_inlet_results.pop(panel_index, None)
         self._invalidate_timing(panel_index)
         panel.frame_view._placeholder = "No recordings found"
         panel.frame_view.update()
@@ -690,10 +751,17 @@ class AnalysisPage(QWidget):
         panel = (self.panel_a, self.panel_b)[panel_index]
         result = (
             load_saved_analysis_result(panel.info.path, self._parameters())
-            if panel.info is not None
+            if panel.info is not None and panel.roi is not None
             else None
         )
-        if result is None:
+        inlet_result = (
+            load_saved_inlet_analysis_result(panel.info.path)
+            if panel.info is not None and panel.inlet_roi is not None
+            else None
+        )
+        if (panel.roi is not None and result is None) or (
+            panel.inlet_roi is not None and inlet_result is None
+        ):
             self._run_analysis((panel_index,))
             return
 
@@ -702,12 +770,13 @@ class AnalysisPage(QWidget):
             if task.panel_index == panel_index:
                 task.cancelled = True
         self._published_results[panel_index] = result
+        self._published_inlet_results[panel_index] = inlet_result
         panel.frame_view.set_roi_processing(False)
         self._set_analysis_running(any(not task.cancelled for task in self._analysis_tasks))
         self._publish_available_results()
 
     def _run_analysis(self, panel_indices: tuple[int, ...] | None = None) -> None:
-        if not self.stage.is_enabled():
+        if not self.stage.is_enabled() and not self.inlet_stage.is_enabled():
             return
         all_panels = (self.panel_a, self.panel_b)
         active_indices = (0, 1) if self._compare else (0,)
@@ -741,7 +810,7 @@ class AnalysisPage(QWidget):
         self,
         generation: int,
         panel_index: int,
-        result: ROIResidenceResult | None,
+        results: tuple[ROIResidenceResult | None, InletROIResult | None],
     ) -> None:
         task = next(
             (
@@ -755,10 +824,12 @@ class AnalysisPage(QWidget):
             self._analysis_tasks.remove(task)
         if generation != self._analysis_generations[panel_index]:
             return
+        result, inlet_result = results
         self._published_results[panel_index] = result
+        self._published_inlet_results[panel_index] = inlet_result
         panel = (self.panel_a, self.panel_b)[panel_index]
-        if result is not None and panel.info is not None:
-            save_analysis_result(panel.info.path, result)
+        if panel.info is not None and (result is not None or inlet_result is not None):
+            save_analysis_results(panel.info.path, result, inlet_result)
         panel.frame_view.set_roi_processing(False)
         self._set_analysis_running(any(not candidate.cancelled for candidate in self._analysis_tasks))
         self._publish_available_results()

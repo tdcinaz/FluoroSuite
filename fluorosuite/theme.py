@@ -4,6 +4,7 @@ from __future__ import annotations
 
 # Panel accent colors for ROI overlays and plot traces.
 ROI_COLOR = "#38bdf8"
+INLET_ROI_COLOR = "#5eead4"
 ACCENT = "#14b8a6"
 # Trace/ROI colors for the two comparison videos.
 TRACE_A = "#38bdf8"

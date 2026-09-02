@@ -11,6 +11,8 @@ import numpy as np
 
 from fluorosuite.pipeline import (
     Circle,
+    InletROIResult,
+    Rectangle,
     ROIParameters,
     ROIResidenceResult,
     TimingAlignmentResult,
@@ -18,10 +20,14 @@ from fluorosuite.pipeline import (
 )
 from fluorosuite.recordings import (
     load_saved_analysis_result,
+    load_saved_inlet_analysis_result,
+    load_saved_inlet_roi,
     load_saved_roi,
     load_saved_rotation,
     load_saved_timing_alignment,
     save_analysis_result,
+    save_analysis_results,
+    save_inlet_roi,
     save_roi,
     save_rotation,
     save_timing_alignment,
@@ -54,7 +60,10 @@ class RecordingAnalysisMetadataTests(unittest.TestCase):
             self.assertEqual(metadata["data_file"], "recording.csv")
             self.assertTrue(raw_path.with_suffix(".csv").exists())
             with raw_path.with_suffix(".csv").open(newline="") as handle:
-                self.assertEqual(csv.reader(handle).__next__(), ["time_s", "roi_mean"])
+                self.assertEqual(
+                    csv.reader(handle).__next__(),
+                    ["time_s", "roi_mean", "inlet_roi_mean"],
+                )
 
             parameters = ROIParameters(baseline_frames=2, clearance_fraction=0.5)
             loaded = load_saved_analysis_result(raw_path, parameters)
@@ -82,6 +91,48 @@ class RecordingAnalysisMetadataTests(unittest.TestCase):
             self.assertEqual(loaded.baseline, float(replacement.roi_mean[0]))
             self.assertNotEqual(loaded.baseline, replacement.baseline)
 
+    def test_round_trips_inlet_means_with_aneurysm_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            raw_path = Path(temporary_directory) / "recording.raw"
+            time = np.array([0.0, 0.1, 0.2], dtype=np.float32)
+            result = analyze_roi_means(
+                np.array([100.0, 90.0, 95.0], dtype=np.float32),
+                ROIParameters(),
+                fps=10.0,
+                time=time,
+            )
+            inlet_result = InletROIResult(
+                time=time,
+                roi_mean=np.array([200.0, 180.0, 190.0], dtype=np.float32),
+            )
+
+            save_analysis_results(raw_path, result, inlet_result)
+
+            loaded = load_saved_inlet_analysis_result(raw_path)
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            np.testing.assert_array_equal(loaded.time, inlet_result.time)
+            np.testing.assert_array_equal(loaded.roi_mean, inlet_result.roi_mean)
+
+    def test_round_trips_inlet_only_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            raw_path = Path(temporary_directory) / "recording.raw"
+            inlet_result = InletROIResult(
+                time=np.array([0.0, 0.1], dtype=np.float32),
+                roi_mean=np.array([200.0, 180.0], dtype=np.float32),
+            )
+
+            save_analysis_results(raw_path, None, inlet_result)
+
+            self.assertIsNone(load_saved_analysis_result(raw_path, ROIParameters()))
+            loaded = load_saved_inlet_analysis_result(raw_path)
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            np.testing.assert_array_equal(loaded.roi_mean, inlet_result.roi_mean)
+            with raw_path.with_suffix(".csv").open(newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual([row["roi_mean"] for row in rows], ["", ""])
+
     def test_saves_analysis_data_without_replacing_recording_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             raw_path = Path(temporary_directory) / "recording.raw"
@@ -107,6 +158,29 @@ class RecordingAnalysisMetadataTests(unittest.TestCase):
             save_roi(raw_path, Circle(40, 50, 60))
 
             self.assertEqual(load_saved_roi(raw_path), Circle(40, 50, 60))
+
+    def test_inlet_roi_round_trips_position_dimensions_and_rotation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            raw_path = Path(temporary_directory) / "recording.raw"
+            sidecar = raw_path.with_suffix(".json")
+            sidecar.write_text(json.dumps({"frames": 120, "started": 10.0}))
+            inlet_roi = Rectangle(300, 400, 40, 120, 86)
+
+            save_inlet_roi(raw_path, inlet_roi)
+
+            metadata = json.loads(sidecar.read_text())
+            self.assertEqual(metadata["frames"], 120)
+            self.assertEqual(
+                metadata["analysis"]["inlet_roi"],
+                {
+                    "center_x": 300,
+                    "center_y": 400,
+                    "width": 40,
+                    "height": 120,
+                    "rotation": 86,
+                },
+            )
+            self.assertEqual(load_saved_inlet_roi(raw_path), inlet_roi)
 
     def test_rotation_round_trips_and_preserves_recording_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

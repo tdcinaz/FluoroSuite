@@ -4,8 +4,44 @@ import unittest
 
 import numpy as np
 
-from fluorosuite.pipeline.models import ROIParameters, TimingAlignmentResult
-from fluorosuite.pipeline.stages import analyze_roi_means, detect_injection_timing
+from fluorosuite.pipeline.models import Circle, ROIParameters, Rectangle, TimingAlignmentResult
+from fluorosuite.pipeline.stages import analyze_roi_means, analyze_rois_stream, detect_injection_timing
+
+
+class RectangleROITests(unittest.TestCase):
+    def test_unrotates_vertical_display_roi_for_raw_frame_mask(self) -> None:
+        rectangle = Rectangle(center_x=100, center_y=100, width=40, height=120, rotation=90)
+
+        mask = rectangle.mask((201, 201))
+
+        self.assertEqual(np.count_nonzero(mask), 40 * 120)
+        self.assertTrue(mask[100, 159])
+        self.assertTrue(mask[120, 100])
+        self.assertFalse(mask[121, 100])
+        self.assertFalse(mask[100, 160])
+
+    def test_samples_aneurysm_and_inlet_means_in_one_frame_pass(self) -> None:
+        frames = np.zeros((3, 201, 201), dtype=np.float32)
+        circle = Circle(center_x=25, center_y=25, radius=5)
+        inlet_roi = Rectangle(center_x=100, center_y=100, width=40, height=120, rotation=90)
+        circle_mask = circle.mask((201, 201))
+        inlet_mask = inlet_roi.mask((201, 201))
+        frames[:, circle_mask] = np.array([100.0, 90.0, 80.0])[:, None]
+        frames[:, inlet_mask] = np.array([200.0, 180.0, 160.0])[:, None]
+
+        result, inlet_result = analyze_rois_stream(
+            iter(frames),
+            circle,
+            inlet_roi,
+            ROIParameters(),
+            fps=10.0,
+        )
+
+        self.assertIsNotNone(result)
+        self.assertIsNotNone(inlet_result)
+        assert result is not None and inlet_result is not None
+        np.testing.assert_array_equal(result.roi_mean, [100.0, 90.0, 80.0])
+        np.testing.assert_array_equal(inlet_result.roi_mean, [200.0, 180.0, 160.0])
 
 
 class ROIResidenceTests(unittest.TestCase):

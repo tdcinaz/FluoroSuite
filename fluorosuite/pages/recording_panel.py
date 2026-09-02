@@ -11,13 +11,15 @@ import numpy as np
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-from ..pipeline import Circle
+from ..pipeline import Circle, Rectangle
 from ..recordings import (
     RecordingInfo,
     RecordingReader,
     list_recordings,
+    load_saved_inlet_roi,
     load_saved_roi,
     load_saved_rotation,
+    save_inlet_roi,
     save_roi,
     save_rotation,
 )
@@ -30,6 +32,7 @@ class RecordingPanel(QWidget):
     """One recorded run with its own selector and ROI overlay, driven externally."""
 
     roiPlaced = Signal(object)  # emits a Circle
+    inletRoiPlaced = Signal(object)  # emits a Rectangle
     recordingOpened = Signal(object)  # emits a RecordingInfo
     recordingCleared = Signal()
 
@@ -47,6 +50,7 @@ class RecordingPanel(QWidget):
         self._info: RecordingInfo | None = None
         self._current_frame: np.ndarray | None = None
         self._roi: Circle | None = None
+        self._inlet_roi: Rectangle | None = None
 
         self.frame_view = FrameView("Select a recording", circular_mask=True)
         self.recording_selector = RecordingSelector()
@@ -55,6 +59,7 @@ class RecordingPanel(QWidget):
         self.recording_selector.currentIndexChanged.connect(self._open_selected)
         self.recording_selector.popupAboutToShow.connect(self.refresh_recordings)
         self.frame_view.roiPlaced.connect(self._on_roi_placed)
+        self.frame_view.inletRoiPlaced.connect(self._on_inlet_roi_placed)
 
         self._build_layout()
 
@@ -78,6 +83,10 @@ class RecordingPanel(QWidget):
         return self._roi
 
     @property
+    def inlet_roi(self) -> Rectangle | None:
+        return self._inlet_roi
+
+    @property
     def rotation(self) -> int:
         return self._visualization.rotation
 
@@ -93,6 +102,9 @@ class RecordingPanel(QWidget):
 
     def set_roi_editable(self, editable: bool) -> None:
         self.frame_view.set_roi_editable(editable)
+
+    def set_inlet_roi_editable(self, editable: bool) -> None:
+        self.frame_view.set_inlet_roi_editable(editable)
 
     def set_roi_radius(self, radius: int) -> None:
         self.frame_view.set_roi_radius(radius)
@@ -174,8 +186,10 @@ class RecordingPanel(QWidget):
         self._info = info
         self._reader = RecordingReader(info.path)
         self._roi = load_saved_roi(info.path)
+        self._inlet_roi = load_saved_inlet_roi(info.path)
         self.set_rotation(load_saved_rotation(info.path))
         self.frame_view.set_roi(self._roi)
+        self.frame_view.set_inlet_roi(self._inlet_roi)
         self.show_frame(0)
         self.recordingOpened.emit(info)
 
@@ -193,3 +207,9 @@ class RecordingPanel(QWidget):
         if self._info is not None:
             save_roi(self._info.path, roi)
         self.roiPlaced.emit(roi)
+
+    def _on_inlet_roi_placed(self, roi: Rectangle) -> None:
+        self._inlet_roi = roi
+        if self._info is not None:
+            save_inlet_roi(self._info.path, roi)
+        self.inletRoiPlaced.emit(roi)

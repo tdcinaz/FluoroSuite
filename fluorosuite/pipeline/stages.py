@@ -1,4 +1,4 @@
-"""Pipeline stage registry and the aneurysm ROI residence analysis.
+"""Pipeline stage registry and ROI analysis implementations.
 
 Iodinated contrast attenuates X-rays, so it appears dark in fluoroscopy. The
 residence signal is therefore measured as ``baseline - current`` mean brightness
@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable
 
 import numpy as np
 
-from .models import Circle, ROIParameters, ROIResidenceResult, TimingAlignmentResult
+from .models import Circle, InletROIResult, Rectangle, ROIParameters, ROIResidenceResult, TimingAlignmentResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +32,11 @@ STAGE_REGISTRY: dict[str, StageDefinition] = {
         key="roi_analysis",
         display_name="Aneurysm ROI analysis",
         description="Place a circular ROI on the aneurysm and measure contrast residence over time.",
+    ),
+    "inlet_roi_analysis": StageDefinition(
+        key="inlet_roi_analysis",
+        display_name="Inlet ROI analysis",
+        description="Place a fixed 40 x 120 px ROI on the vertically oriented inlet vessel.",
     ),
 }
 
@@ -149,23 +154,67 @@ def analyze_roi_residence_stream(
     should_continue: Callable[[], bool] | None = None,
 ) -> ROIResidenceResult:
     """Measure ROI residence from frames yielded without retaining the stack."""
-    mask: np.ndarray | None = None
-    pixel_count = 0
+    result, _inlet_result = analyze_rois_stream(
+        frames,
+        circle,
+        None,
+        parameters,
+        fps,
+        total_frames,
+        progress,
+        should_continue,
+    )
+    if result is None:  # pragma: no cover - circle is always provided
+        return analyze_roi_means(np.empty(0, dtype=np.float32), parameters, fps)
+    return result
+
+
+def analyze_rois_stream(
+    frames: Iterable[np.ndarray],
+    circle: Circle | None,
+    inlet_roi: Rectangle | None,
+    parameters: ROIParameters,
+    fps: float,
+    total_frames: int = 0,
+    progress: Callable[[float], None] | None = None,
+    should_continue: Callable[[], bool] | None = None,
+) -> tuple[ROIResidenceResult | None, InletROIResult | None]:
+    """Measure enabled aneurysm and inlet ROIs in one pass over raw frames."""
+    roi_mask: np.ndarray | None = None
+    inlet_mask: np.ndarray | None = None
+    roi_pixel_count = 0
+    inlet_pixel_count = 0
     roi_means: list[float] = []
+    inlet_means: list[float] = []
     next_update = 0.01
     for frame in frames:
         if should_continue is not None and not should_continue():
             break
-        if mask is None:
-            mask = circle.mask((int(frame.shape[0]), int(frame.shape[1])))
-            pixel_count = max(1, int(np.count_nonzero(mask)))
-        roi_means.append(float(frame[mask].sum()) / pixel_count)
+        shape = (int(frame.shape[0]), int(frame.shape[1]))
+        if circle is not None:
+            if roi_mask is None:
+                roi_mask = circle.mask(shape)
+                roi_pixel_count = max(1, int(np.count_nonzero(roi_mask)))
+            roi_means.append(float(frame[roi_mask].sum()) / roi_pixel_count)
+        if inlet_roi is not None:
+            if inlet_mask is None:
+                inlet_mask = inlet_roi.mask(shape)
+                inlet_pixel_count = max(1, int(np.count_nonzero(inlet_mask)))
+            inlet_means.append(float(frame[inlet_mask].sum()) / inlet_pixel_count)
         if progress is not None and total_frames > 0:
-            fraction = len(roi_means) / total_frames
+            processed_frames = len(roi_means) if circle is not None else len(inlet_means)
+            fraction = processed_frames / total_frames
             if fraction >= next_update or fraction >= 1.0:
                 progress(min(1.0, fraction))
                 next_update += 0.01
-    return analyze_roi_means(np.asarray(roi_means, dtype=np.float32), parameters, fps)
+    roi_values = np.asarray(roi_means, dtype=np.float32)
+    inlet_values = np.asarray(inlet_means, dtype=np.float32)
+    roi_result = analyze_roi_means(roi_values, parameters, fps) if circle is not None else None
+    inlet_result = None
+    if inlet_roi is not None:
+        time = np.arange(inlet_values.size, dtype=np.float32) / max(1.0, float(fps))
+        inlet_result = InletROIResult(time=time, roi_mean=inlet_values)
+    return roi_result, inlet_result
 
 
 def analyze_roi_means(

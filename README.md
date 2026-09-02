@@ -8,8 +8,8 @@ analysis into a single PySide6 interface with three tabs:
   16-bit frames, applies window/level for viewing, and records each exposure to a
   `.raw` run with a JSON sidecar.
 - **Playback** — reviews recorded runs with a scrub/transport bar and window/level.
-- **Analysis** — places a manual aneurysm ROI circle and measures contrast
-  residence over the recording.
+- **Analysis** — measures aneurysm contrast residence from a circular ROI and
+  inlet brightness from a fixed rectangular ROI.
 
 The capture engine and on-disk recording format are compatible with the legacy
 Fluoro daemon, so existing recordings in `captures/live/` open directly. Disable
@@ -35,8 +35,8 @@ uv run fluorosuite --stream-host 0.0.0.0 --stream-port 5802
 Each run is a flat file of concatenated 1024×1024 little-endian 16-bit (14-bit
 significant) frames, with a JSON sidecar describing geometry, frame count, and
 timing. The sidecar's `data_file` field names the corresponding CSV containing
-only `time_s` and `roi_mean`; contrast and summary metrics are calculated when
-the data is loaded. Recordings are written to `captures/live/`.
+`time_s`, `roi_mean`, and `inlet_roi_mean`; contrast and summary metrics are
+calculated when the data is loaded. Recordings are written to `captures/live/`.
 
 ## Contrast residence
 
@@ -48,8 +48,8 @@ reports baseline level, peak contrast, time to peak, and residence time.
 
 - `fluorosuite/capture/` — GVSP stream reassembly (`receiver.py`) and per-exposure
   recording (`recorder.py`).
-- `fluorosuite/pipeline/` — frontend-neutral pipeline contracts and the single
-  ROI residence analysis stage.
+- `fluorosuite/pipeline/` — frontend-neutral pipeline contracts and ROI analysis
+  stages.
 - `fluorosuite/widgets/` — reusable frame view, visualization panel, transport
   bar, and collapsible stage drawer.
 - `fluorosuite/pages/` — the capture, playback, and analysis pages.

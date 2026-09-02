@@ -22,6 +22,51 @@ class Circle:
 
 
 @dataclass(frozen=True, slots=True)
+class Rectangle:
+    center_x: int
+    center_y: int
+    width: int
+    height: int
+    rotation: int = 0
+
+    def mask(self, shape: tuple[int, int]) -> np.ndarray:
+        """Return the raw-frame mask for a rectangle placed on the rotated view."""
+        rows, cols = shape
+        yy, xx = np.ogrid[:rows, :cols]
+        radians = np.deg2rad(self.rotation)
+        cosine = np.cos(radians)
+        sine = np.sin(radians)
+        delta_x = xx - self.center_x
+        delta_y = yy - self.center_y
+        display_x = cosine * delta_x - sine * delta_y
+        display_y = sine * delta_x + cosine * delta_y
+        return (
+            (display_x >= -self.width / 2)
+            & (display_x < self.width / 2)
+            & (display_y >= -self.height / 2)
+            & (display_y < self.height / 2)
+        )
+
+    def corners(self) -> tuple[tuple[float, float], ...]:
+        """Return raw-frame corners for this display-oriented rectangle."""
+        radians = np.deg2rad(self.rotation)
+        cosine = np.cos(radians)
+        sine = np.sin(radians)
+        return tuple(
+            (
+                self.center_x + cosine * display_x + sine * display_y,
+                self.center_y - sine * display_x + cosine * display_y,
+            )
+            for display_x, display_y in (
+                (-self.width / 2, -self.height / 2),
+                (self.width / 2, -self.height / 2),
+                (self.width / 2, self.height / 2),
+                (-self.width / 2, self.height / 2),
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ROIParameters:
     roi_radius: int = 70
     baseline_frames: int = 8
@@ -34,6 +79,12 @@ class StageInstance:
     enabled: bool = True
     roi: Circle | None = None
     parameters: ROIParameters = ROIParameters()
+
+
+@dataclass(frozen=True, slots=True)
+class InletROIResult:
+    time: np.ndarray
+    roi_mean: np.ndarray
 
 
 @dataclass(frozen=True, slots=True)
