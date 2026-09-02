@@ -12,8 +12,11 @@ import numpy as np
 
 from fluorosuite.export import (
     VideoEncoder,
+    _COMPARISON_GROUPS,
+    _hardware_bitrate,
     _ordered_comparison_videos,
     _playback_bounds,
+    _trial_designator,
     export_aligned_analysis_csv,
     export_comparison_video,
     export_live_trials,
@@ -26,6 +29,9 @@ from fluorosuite.visualization import Visualization
 
 
 class ExportRenderingTests(unittest.TestCase):
+    def test_hardware_bitrate_is_capped_for_high_resolution_video(self) -> None:
+        self.assertEqual(_hardware_bitrate(7 * 1024, 3 * 1024, 30.0), 1_000_000_000)
+
     def test_auto_encoder_uses_platform_hardware_after_successful_probe(self) -> None:
         with (
             patch("fluorosuite.export.platform.system", return_value="Darwin"),
@@ -105,6 +111,66 @@ class ExportRenderingTests(unittest.TestCase):
         filter_graph = command[command.index("-filter_complex") + 1]
         self.assertIn("xstack=inputs=6:layout=0_0|0_100|0_200|100_0|100_100|100_200", filter_graph)
         self.assertIn("[grid][6:v]overlay=0:0:shortest=1", filter_graph)
+
+    def test_wide_comparison_grid_falls_back_from_videotoolbox(self) -> None:
+        names = [
+            f"TF_{variant}T{trial}_post_0.mp4"
+            for variant in ("0C", "1Y", "2H", "3P", "4T")
+            for trial in (1, 2, 3)
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            paths = [directory / name for name in names]
+            for path in paths:
+                path.touch()
+            result = MagicMock(returncode=0, stderr="")
+            with (
+                patch("fluorosuite.export.shutil.which", return_value="/usr/bin/ffmpeg"),
+                patch("fluorosuite.export._write_comparison_labels"),
+                patch("fluorosuite.export.subprocess.run", return_value=result) as run,
+            ):
+                export_comparison_video(
+                    paths,
+                    directory / "TF_comparison.mp4",
+                    tile_size=1024,
+                    encoder=VideoEncoder("videotoolbox", "h264_videotoolbox", True, "format=yuv420p", "yuv420p"),
+                )
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("-c:v") + 1], "libx264")
+
+    def test_comparison_groups_select_requested_variants(self) -> None:
+        paths = [
+            Path(f"TF_{variant}T{trial}_post_0.mp4")
+            for variant in ("0C", "1Y", "2H", "3P", "4T", "5H", "6P")
+            for trial in (1, 2, 3)
+        ]
+        groups = {
+            filename: [
+                path
+                for path in paths
+                if _trial_designator(path)[:2] in variants
+            ]
+            for filename, variants in _COMPARISON_GROUPS
+        }
+
+        self.assertEqual(
+            {
+                filename: [designator for designator, _path in _ordered_comparison_videos(group)]
+                for filename, group in groups.items()
+            },
+            {
+                "TF_comparison_0C_3P_6P.mp4": [
+                    "0CT1", "0CT2", "0CT3", "3PT1", "3PT2", "3PT3", "6PT1", "6PT2", "6PT3",
+                ],
+                "TF_comparison_0C_2H_5H.mp4": [
+                    "0CT1", "0CT2", "0CT3", "2HT1", "2HT2", "2HT3", "5HT1", "5HT2", "5HT3",
+                ],
+                "TF_comparison_0C_1Y_4T.mp4": [
+                    "0CT1", "0CT2", "0CT3", "1YT1", "1YT2", "1YT3", "4TT1", "4TT2", "4TT3",
+                ],
+            },
+        )
 
     def test_exports_aligned_analysis_with_shared_time_and_trial_headers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -31,8 +31,14 @@ from .visualization import DarkFieldCorrection, Visualization, render_gray, to_q
 WINDOW_WIDTH = 1700
 WINDOW_LEVEL = 800
 COMPARISON_TILE_SIZE = 320
+MAX_HARDWARE_BITRATE = 1_000_000_000
 _RECORDING_STEM = re.compile(r"^.+_([^_]+)_(?:pre|post)_\d+$")
 _COMPARISON_TRIAL = re.compile(r"^(?P<variant>\d[A-Z])T(?P<trial>[123])$")
+_COMPARISON_GROUPS = (
+    ("TF_comparison_0C_3P_6P.mp4", ("0C", "3P", "6P")),
+    ("TF_comparison_0C_2H_5H.mp4", ("0C", "2H", "5H")),
+    ("TF_comparison_0C_1Y_4T.mp4", ("0C", "1Y", "4T")),
+)
 
 
 @dataclass(frozen=True)
@@ -143,7 +149,7 @@ def _configured_encoder(name: str) -> VideoEncoder:
 def _hardware_bitrate(width: int, height: int, fps: float) -> int:
     reference_pixels_per_second = 1024 * 1024 * 30
     scaled = round(100_000_000 * width * height * fps / reference_pixels_per_second)
-    return max(20_000_000, scaled)
+    return min(MAX_HARDWARE_BITRATE, max(20_000_000, scaled))
 
 
 def _video_encoder_options(
@@ -339,6 +345,11 @@ def export_comparison_video(
     selected_encoder = (
         encoder if isinstance(encoder, VideoEncoder) else select_video_encoder(executable, encoder)
     )
+    column_count = len(videos) // 3
+    output_width = column_count * tile_size
+    output_height = 3 * tile_size
+    if selected_encoder.name == "videotoolbox" and output_width > 4096:
+        selected_encoder = _SOFTWARE_ENCODER
 
     with tempfile.TemporaryDirectory() as temporary_directory:
         labels_path = Path(temporary_directory) / "comparison-labels.png"
@@ -348,7 +359,6 @@ def export_comparison_video(
             f"[{index}:v]scale={tile_size}:{tile_size}:flags=lanczos,setsar=1[tile{index}]"
             for index in range(len(videos))
         ]
-        column_count = len(videos) // 3
         layout = "|".join(
             f"{column * tile_size}_{row * tile_size}"
             for column in range(column_count)
@@ -365,8 +375,6 @@ def export_comparison_video(
                 ),
             ]
         )
-        output_width = column_count * tile_size
-        output_height = 3 * tile_size
         command = [
             executable,
             "-hide_banner",
@@ -625,6 +633,12 @@ def main() -> None:
     parser.add_argument("--raw", action="store_true", help="Export uncompressed 8-bit grayscale AVI instead of MP4")
     parser.add_argument("--ffmpeg", default="ffmpeg", help="FFmpeg executable to run")
     parser.add_argument(
+        "--comparison-tile-size",
+        type=int,
+        default=COMPARISON_TILE_SIZE,
+        help=f"Square tile resolution in comparison videos (default: {COMPARISON_TILE_SIZE})",
+    )
+    parser.add_argument(
         "--encoder",
         choices=ENCODER_CHOICES,
         default="auto",
@@ -671,9 +685,25 @@ def main() -> None:
             arguments.output_dir / "TF_comparison.mp4",
             overwrite=arguments.overwrite,
             ffmpeg=arguments.ffmpeg,
+            tile_size=arguments.comparison_tile_size,
             encoder=selected_encoder,
         )
         print(f"Comparison video: {comparison_path}")
+        for filename, variants in _COMPARISON_GROUPS:
+            group_inputs = [
+                path
+                for path in comparison_inputs
+                if _trial_designator(path)[:2] in variants
+            ]
+            comparison_path = export_comparison_video(
+                group_inputs,
+                arguments.output_dir / filename,
+                overwrite=arguments.overwrite,
+                ffmpeg=arguments.ffmpeg,
+                tile_size=arguments.comparison_tile_size,
+                encoder=selected_encoder,
+            )
+            print(f"Comparison video: {comparison_path}")
 
 
 if __name__ == "__main__":
