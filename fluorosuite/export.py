@@ -204,7 +204,13 @@ def _ffmpeg_encoder_names(executable: str) -> set[str]:
     }
 
 
-def _probe_video_encoder(executable: str, encoder: VideoEncoder) -> bool:
+def _probe_video_encoder(
+    executable: str,
+    encoder: VideoEncoder,
+    width: int = COLUMNS,
+    height: int = ROWS,
+    fps: float = 30.0,
+) -> bool:
     command = [
         executable,
         "-hide_banner",
@@ -214,13 +220,13 @@ def _probe_video_encoder(executable: str, encoder: VideoEncoder) -> bool:
         "-f",
         "lavfi",
         "-i",
-        f"color=black:s={COLUMNS}x{ROWS}:r=30",
+        f"color=black:s={width}x{height}:r={fps}",
         "-frames:v",
         "2",
         "-an",
         "-vf",
         encoder.frame_filter,
-        *_video_encoder_options(encoder, COLUMNS, ROWS, 30.0),
+        *_video_encoder_options(encoder, width, height, fps),
         "-f",
         "null",
         "-",
@@ -348,7 +354,13 @@ def export_comparison_video(
     column_count = len(videos) // 3
     output_width = column_count * tile_size
     output_height = 3 * tile_size
-    if selected_encoder.name == "videotoolbox" and output_width > 4096:
+    if selected_encoder.hardware and not _probe_video_encoder(
+        executable,
+        selected_encoder,
+        output_width,
+        output_height,
+        30.0,
+    ):
         selected_encoder = _SOFTWARE_ENCODER
 
     with tempfile.TemporaryDirectory() as temporary_directory:

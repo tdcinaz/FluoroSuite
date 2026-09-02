@@ -112,10 +112,10 @@ class ExportRenderingTests(unittest.TestCase):
         self.assertIn("xstack=inputs=6:layout=0_0|0_100|0_200|100_0|100_100|100_200", filter_graph)
         self.assertIn("[grid][6:v]overlay=0:0:shortest=1", filter_graph)
 
-    def test_wide_comparison_grid_falls_back_from_videotoolbox(self) -> None:
+    def test_comparison_grid_falls_back_when_hardware_cannot_encode_dimensions(self) -> None:
         names = [
             f"TF_{variant}T{trial}_post_0.mp4"
-            for variant in ("0C", "1Y", "2H", "3P", "4T")
+            for variant in ("0C", "1Y", "2H", "3P", "4T", "5H", "6P")
             for trial in (1, 2, 3)
         ]
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -127,15 +127,18 @@ class ExportRenderingTests(unittest.TestCase):
             with (
                 patch("fluorosuite.export.shutil.which", return_value="/usr/bin/ffmpeg"),
                 patch("fluorosuite.export._write_comparison_labels"),
+                patch("fluorosuite.export._probe_video_encoder", return_value=False) as probe,
                 patch("fluorosuite.export.subprocess.run", return_value=result) as run,
             ):
+                encoder = VideoEncoder("nvenc", "h264_nvenc", True, "format=nv12", "nv12")
                 export_comparison_video(
                     paths,
                     directory / "TF_comparison.mp4",
                     tile_size=1024,
-                    encoder=VideoEncoder("videotoolbox", "h264_videotoolbox", True, "format=yuv420p", "yuv420p"),
+                    encoder=encoder,
                 )
 
+        probe.assert_called_once_with("/usr/bin/ffmpeg", encoder, 7 * 1024, 3 * 1024, 30.0)
         command = run.call_args.args[0]
         self.assertEqual(command[command.index("-c:v") + 1], "libx264")
 
