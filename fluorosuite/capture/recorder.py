@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from statistics import median
 
-from ..config import COLUMNS, EXPOSURE_FRACTION, PIXEL_BYTES, ROWS
+from ..config import CAPTURE_FPS, COLUMNS, EXPOSURE_FRACTION, PIXEL_BYTES, ROWS
 from .receiver import exposure_fraction
 
 _FILENAME_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*$")
@@ -36,10 +36,11 @@ class Recorder:
         self.path: Path | None = None
         self.frames = 0
         self.started: float | None = None
+        self._last_frame_at: float | None = None
         self.enabled = False
         self.naming = {"prefix": "BDL", "trial": "A0", "phase": "pre"}
-        self._opening_frames: deque[tuple[bytes, float]] = deque(maxlen=_OPENING_WINDOW_FRAMES)
-        self._tail_frames: deque[tuple[bytes, float]] = deque()
+        self._opening_frames: deque[tuple[bytes, float, float]] = deque(maxlen=_OPENING_WINDOW_FRAMES)
+        self._tail_frames: deque[tuple[bytes, float, float]] = deque()
         self._stable_scores: deque[float] = deque(maxlen=32)
 
     @staticmethod
@@ -75,6 +76,7 @@ class Recorder:
             return self._state_locked()
 
     def capture(self, pixels: bytes) -> None:
+        captured_at = time.time()
         with self.lock:
             if not self.enabled:
                 return
@@ -86,18 +88,18 @@ class Recorder:
                 self._stop_locked()
                 return
             if self.file is None:
-                self._opening_frames.append((pixels, score))
+                self._opening_frames.append((pixels, score, captured_at))
                 if not self._opening_is_stable_locked():
                     return
                 self._start_locked()
-                for opening_pixels, opening_score in self._opening_frames:
-                    self._write_frame_locked(opening_pixels, opening_score)
+                for opening_pixels, opening_score, opening_at in self._opening_frames:
+                    self._write_frame_locked(opening_pixels, opening_score, opening_at)
                 self._opening_frames.clear()
                 return
-            self._tail_frames.append((pixels, score))
+            self._tail_frames.append((pixels, score, captured_at))
             if len(self._tail_frames) > _TAIL_FRAMES:
-                tail_pixels, tail_score = self._tail_frames.popleft()
-                self._write_frame_locked(tail_pixels, tail_score)
+                tail_pixels, tail_score, tail_at = self._tail_frames.popleft()
+                self._write_frame_locked(tail_pixels, tail_score, tail_at)
 
     def _opening_is_stable_locked(self) -> bool:
         if len(self._opening_frames) < _OPENING_WINDOW_FRAMES:
@@ -107,10 +109,11 @@ class Recorder:
         drift = abs(sum(scores[:half]) / half - sum(scores[half:]) / half)
         return max(scores) - min(scores) <= _OPENING_MAX_SCORE_RANGE and drift <= _OPENING_MAX_SCORE_DRIFT
 
-    def _write_frame_locked(self, pixels: bytes, score: float) -> None:
+    def _write_frame_locked(self, pixels: bytes, score: float, captured_at: float) -> None:
         assert self.file is not None
         self.file.write(pixels)
         self.frames += 1
+        self._last_frame_at = captured_at
         self._stable_scores.append(score)
 
     def _start_locked(self) -> None:
@@ -118,7 +121,8 @@ class Recorder:
         self.path, self.meta_path = self._next_paths_locked()
         self.file = open(self.path, "wb", buffering=1024 * 1024)
         self.frames = 0
-        self.started = time.time()
+        self.started = self._opening_frames[0][2]
+        self._last_frame_at = None
         self._write_meta_locked(None)
 
     def _stop_locked(self) -> None:
@@ -126,15 +130,15 @@ class Recorder:
         if self.file is None:
             return
         minimum_score = median(self._stable_scores) - _CLOSING_SCORE_DROP
-        for pixels, score in self._tail_frames:
+        for pixels, score, captured_at in self._tail_frames:
             if score >= minimum_score:
-                self._write_frame_locked(pixels, score)
+                self._write_frame_locked(pixels, score, captured_at)
         self._tail_frames.clear()
         self._stable_scores.clear()
         self.file.flush()
         self.file.close()
         self.file = None
-        self._write_meta_locked(time.time())
+        self._write_meta_locked(self._last_frame_at)
 
     def _write_meta_locked(self, ended: float | None) -> None:
         assert self.path is not None and self.meta_path is not None
@@ -147,9 +151,11 @@ class Recorder:
             "bits": 14,
             "frame_bytes": PIXEL_BYTES,
             "frames": self.frames,
+            "fps": CAPTURE_FPS,
             "started": self.started,
             "started_at": datetime.fromtimestamp(self.started, timezone.utc).isoformat() if self.started else None,
             "ended": ended,
+            "ended_at": datetime.fromtimestamp(ended, timezone.utc).isoformat() if ended else None,
         }
         temporary = self.meta_path.with_name(self.meta_path.name + ".tmp")
         temporary.write_text(json.dumps(meta, indent=2))

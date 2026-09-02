@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import json
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 
 import numpy as np
@@ -56,6 +57,14 @@ def _write_analysis_value(path: Path, key: str, value: object) -> None:
 def _read_analysis_value(path: Path, key: str) -> object:
     analysis = _read_sidecar(path).get("analysis")
     return analysis.get(key) if isinstance(analysis, dict) else None
+
+
+def _metadata_fps(metadata: dict) -> float | None:
+    try:
+        fps = float(metadata["fps"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return fps if isfinite(fps) and fps > 0 else None
 
 
 def load_saved_roi(path: Path) -> Circle | None:
@@ -123,14 +132,16 @@ def save_rotation(path: Path, rotation: int) -> None:
 
 
 def load_saved_timing_alignment(path: Path) -> TimingAlignmentResult | None:
-    value = _read_analysis_value(path, "timing_alignment")
+    metadata = _read_sidecar(path)
+    analysis = metadata.get("analysis")
+    value = analysis.get("timing_alignment") if isinstance(analysis, dict) else None
     if not isinstance(value, dict):
         return None
     try:
         return TimingAlignmentResult(
             injection_frame=max(0, int(value["injection_frame"])),
             start_frame=max(0, int(value["start_frame"])),
-            fps=max(1.0, float(value["fps"])),
+            fps=max(1.0, _metadata_fps(metadata) or float(value["fps"])),
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -239,6 +250,7 @@ class RecordingInfo:
     frames: int
     started: float | None
     ended: float | None
+    frame_rate: float | None = None
 
     @property
     def name(self) -> str:
@@ -252,9 +264,11 @@ class RecordingInfo:
 
     @property
     def fps(self) -> float:
+        if self.frame_rate is not None and isfinite(self.frame_rate) and self.frame_rate > 0:
+            return max(1.0, self.frame_rate)
         duration = self.duration
-        if duration and self.frames:
-            return max(1.0, self.frames / duration)
+        if duration and self.frames > 1:
+            return max(1.0, (self.frames - 1) / duration)
         return 15.0
 
     def label(self) -> str:
@@ -279,6 +293,7 @@ def list_recordings(directory: Path) -> list[RecordingInfo]:
                 frames=size // PIXEL_BYTES,
                 started=meta.get("started"),
                 ended=meta.get("ended"),
+                frame_rate=_metadata_fps(meta),
             )
         )
     items.sort(key=lambda item: item.started or 0, reverse=True)

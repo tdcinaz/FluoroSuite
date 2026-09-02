@@ -19,6 +19,7 @@ from fluorosuite.pipeline import (
     analyze_roi_means,
 )
 from fluorosuite.recordings import (
+    RecordingInfo,
     load_saved_analysis_result,
     load_saved_inlet_analysis_result,
     load_saved_inlet_roi,
@@ -32,6 +33,24 @@ from fluorosuite.recordings import (
     save_rotation,
     save_timing_alignment,
 )
+
+
+class RecordingInfoTests(unittest.TestCase):
+    def test_fps_uses_inter_frame_interval_count(self) -> None:
+        info = RecordingInfo(Path("recording.raw"), frames=301, started=10.0, ended=20.0)
+
+        self.assertEqual(info.fps, 30.0)
+
+    def test_declared_frame_rate_overrides_wall_clock_estimate(self) -> None:
+        info = RecordingInfo(
+            Path("recording.raw"),
+            frames=301,
+            started=10.0,
+            ended=19.9,
+            frame_rate=30.0,
+        )
+
+        self.assertEqual(info.fps, 30.0)
 
 
 class RecordingAnalysisMetadataTests(unittest.TestCase):
@@ -148,6 +167,29 @@ class RecordingAnalysisMetadataTests(unittest.TestCase):
             self.assertEqual(
                 load_saved_timing_alignment(raw_path),
                 TimingAlignmentResult(90, 40, 10.0),
+            )
+
+    def test_timing_alignment_uses_declared_recording_frame_rate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            raw_path = Path(temporary_directory) / "recording.raw"
+            raw_path.with_suffix(".json").write_text(
+                json.dumps(
+                    {
+                        "fps": 30.0,
+                        "analysis": {
+                            "timing_alignment": {
+                                "injection_frame": 90,
+                                "start_frame": 40,
+                                "fps": 30.034,
+                            }
+                        },
+                    }
+                )
+            )
+
+            self.assertEqual(
+                load_saved_timing_alignment(raw_path),
+                TimingAlignmentResult(90, 40, 30.0),
             )
 
     def test_saving_roi_overwrites_previous_position_and_radius(self) -> None:

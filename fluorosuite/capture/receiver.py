@@ -10,6 +10,7 @@ from __future__ import annotations
 import socket
 import threading
 import time
+from collections import deque
 
 import numpy as np
 
@@ -22,6 +23,10 @@ from ..config import (
     PIXEL_BYTES,
     ROWS,
 )
+
+_METRICS_INTERVAL = 0.5
+_FPS_WINDOW = 3.0
+_FPS_WARMUP = 1.5
 
 
 def exposure_fraction(frame_bytes: bytes) -> float:
@@ -99,6 +104,23 @@ class PreviewStore:
             }
 
 
+class _FrameRateEstimator:
+    def __init__(self, window: float = _FPS_WINDOW, warmup: float = _FPS_WARMUP) -> None:
+        self.window = window
+        self.warmup = warmup
+        self.samples: deque[tuple[float, int]] = deque()
+
+    def sample(self, timestamp: float, received: int) -> float | None:
+        self.samples.append((timestamp, received))
+        cutoff = timestamp - self.window
+        while len(self.samples) > 1 and self.samples[1][0] <= cutoff:
+            self.samples.popleft()
+        elapsed = timestamp - self.samples[0][0]
+        if elapsed < self.warmup:
+            return None
+        return max(0.0, (received - self.samples[0][1]) / elapsed)
+
+
 class _FrameProcessor:
     """Joins reassembled payloads off the socket thread, records, and publishes."""
 
@@ -158,7 +180,9 @@ class _StreamAssembler:
         gvsp_offset = udp_offset + 8
         if gvsp_offset + 8 > len(packet):
             return
-        if int.from_bytes(packet[udp_offset : udp_offset + 2], "big") == GVCP_CONTROL_PORT:
+        source_port = int.from_bytes(packet[udp_offset : udp_offset + 2], "big")
+        destination_port = int.from_bytes(packet[udp_offset + 2 : udp_offset + 4], "big")
+        if GVCP_CONTROL_PORT in (source_port, destination_port):
             return
         block = int.from_bytes(packet[gvsp_offset + 2 : gvsp_offset + 4], "big")
         packet_format = packet[gvsp_offset + 4] & 15
@@ -241,20 +265,19 @@ class StreamReceiver:
         finally:
             processor.stop()
 
-    def _metrics_loop(self, interval: float = 0.5) -> None:
-        prev_received = 0
+    def _metrics_loop(self, interval: float = _METRICS_INTERVAL) -> None:
         prev_seq = 0
-        prev_time = time.monotonic()
-        last_new = time.monotonic()
+        started_at = time.monotonic()
+        last_new = started_at
+        estimator = _FrameRateEstimator()
+        estimator.sample(started_at, 0)
         while not self._stopped.is_set():
             time.sleep(interval)
             now = time.monotonic()
             snapshot = self.store.snapshot()
             received = int(snapshot["received"])
-            delta = now - prev_time
-            fps = (received - prev_received) / delta if delta > 0 else 0.0
-            prev_received = received
-            prev_time = now
+            measured_fps = estimator.sample(now, received)
+            fps = float(snapshot["fps"]) if measured_fps is None else measured_fps
 
             seq, pixels = self.latest.snapshot()
             suggested = None

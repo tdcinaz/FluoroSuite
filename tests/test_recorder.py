@@ -4,11 +4,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
 from fluorosuite.capture.recorder import Recorder
 from fluorosuite.config import COLUMNS, PIXEL_BYTES, ROWS
+from fluorosuite.recordings import list_recordings
 
 
 def frame_with_exposure_fraction(fraction: float) -> bytes:
@@ -19,6 +21,26 @@ def frame_with_exposure_fraction(fraction: float) -> bytes:
 
 
 class RecorderTests(unittest.TestCase):
+    def test_metadata_spans_first_to_last_written_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            recorder = Recorder(directory)
+            recorder.set_enabled(True)
+            frame_times = [100.0 + index / 30.0 for index in range(17)]
+
+            with patch("fluorosuite.capture.recorder.time.time", side_effect=frame_times):
+                for _ in range(16):
+                    recorder.capture(frame_with_exposure_fraction(0.32))
+                recorder.capture(frame_with_exposure_fraction(0.0))
+
+            raw_path = next(directory.glob("*.raw"))
+            metadata = json.loads(raw_path.with_suffix(".json").read_text())
+            self.assertEqual(metadata["started"], frame_times[0])
+            self.assertEqual(metadata["ended"], frame_times[15])
+            self.assertEqual(metadata["ended_at"], "1970-01-01T00:01:40.500000+00:00")
+            self.assertEqual(metadata["fps"], 30.0)
+            self.assertAlmostEqual(list_recordings(directory)[0].fps, 30.0)
+
     def test_discards_opening_and_closing_diaphragm_frames(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)

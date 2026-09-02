@@ -23,6 +23,7 @@ PIXEL_BYTES = ROWS * COLUMNS * 2
 BITS = 14
 MAX_VALUE = (1 << BITS) - 1  # 16383
 LUT_SIZE = MAX_VALUE + 1
+CAPTURE_FPS = 30.0
 
 # Network endpoints (see legacy Fluoro network_setup.txt). The raw GVSP stream is
 # the active path; the push receiver is retained for compatibility.
